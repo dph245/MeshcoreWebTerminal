@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101614"><title>MeshCore · Web Terminal</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="MeshCore Startseite"><span class="logo">⌘</span><span>meshcore<small>WEB TERMINAL</small></span></a>
+    <div class="section-label">WORKSPACE <span>01</span></div>
+    <button class="nav-item" id="monitor-nav"><span>◉</span> Netzmonitor <span class="live-dot"></span></button>
+    <div class="section-label">CHANNELS <span id="channel-count">0</span></div>
+    <div id="channels" class="nav-list"><p class="nav-empty">Noch keine Channels geladen.</p></div>
+    <div class="section-label">DIREKTNACHRICHTEN <span id="contact-count">0</span></div>
+    <label class="search"><span>⌕</span><input id="contact-search" placeholder="Kontakte suchen …" aria-label="Kontakte suchen"></label>
+    <div id="contacts" class="nav-list contacts"></div>
+    <div class="sidebar-bottom"><span class="device-icon">▣</span><div><strong id="device-name">Dein Companion</strong><small id="endpoint">192.168.88.14:5000</small></div><span id="device-dot" class="status-dot"></span></div>
+  </aside>
+  <main>
+    <header class="topbar"><div><span class="breadcrumb">WORKSPACE</span><span class="slash">/</span><span id="breadcrumb-title">Netzmonitor</span></div><div class="connection"><span id="connection-status" role="status">Offline</span><button id="connect" class="button compact">Verbinden</button></div></header>
+    <div id="error" class="error" role="alert" hidden></div>
+    <section id="monitor" class="monitor">
+      <div class="page-heading"><div><div class="eyebrow">DEIN MESH. IM BLICK.</div><h1>Netzmonitor<span class="accent">.</span></h1><p>Funkaktivität und Verbindungen direkt von deinem Companion.</p></div><button id="refresh" class="button">↻ &nbsp; Aktualisieren</button></div>
+      <div class="metrics">
+        <article class="metric"><span class="metric-label">VERBINDUNG <span>↗</span></span><strong id="metric-status">Offline</strong><small id="metric-endpoint">TCP · 192.168.88.14:5000</small></article>
+        <article class="metric"><span class="metric-label">KONTAKTE <span>♧</span></span><strong id="metric-contacts">—</strong><small>Im Companion gespeichert</small></article>
+        <article class="metric"><span class="metric-label">EMPFANGENE PAKETE <span>↓</span></span><strong id="metric-rx">—</strong><small id="metric-rx-hint">Warte auf Funkstatistik</small></article>
+        <article class="metric"><span class="metric-label">LETZTES SIGNAL <span>▥</span></span><strong id="metric-rssi">—</strong><small id="metric-snr">RSSI / SNR</small></article>
+      </div>
+      <div class="monitor-grid">
+        <article class="panel activity-panel"><div class="panel-heading"><h2>Live-Aktivität</h2><span class="pill">LETZTE 60 SEKUNDEN</span></div><div class="activity-chart" id="activity-chart" aria-label="Empfangene Funkpakete der letzten 60 Sekunden"></div><div class="chart-axis"><span>−60 s</span><span>−30 s</span><span>Jetzt</span></div><p class="chart-caption"><span class="legend-dot"></span> Empfangene Funkpakete · beobachtet in dieser Sitzung</p></article>
+        <article class="panel radio-panel"><div class="panel-heading"><h2>Companion</h2><span class="pill">RADIO</span></div><dl id="radio-info"><div><dt>Adresse</dt><dd>192.168.88.14:5000</dd></div><div><dt>Gerät</dt><dd>Warte auf Verbindung</dd></div></dl><div class="radio-note">Der Monitor zeigt die vom Companion gemeldeten Pakete und Signalwerte.</div></article>
+      </div>
+      <article class="panel event-panel"><div class="panel-heading"><div class="inline-heading"><h2>Ereignisprotokoll</h2><span id="event-count" class="count">0</span></div><div class="event-controls"><select id="event-filter" aria-label="Ereignisse filtern"><option value="all">Alle Ereignisse</option><option value="radio">Funkpakete</option><option value="messages">Nachrichten</option></select><button id="pause" class="button compact">Pausieren</button></div></div><div class="table-wrap"><table><thead><tr><th>ZEIT</th><th>EREIGNIS</th><th>DETAILS</th><th>RSSI</th><th>SNR</th></tr></thead><tbody id="events"></tbody></table><div id="events-empty" class="empty-state"><span class="empty-symbol">⌁</span><h3>Bereit für dein Mesh</h3><p>Verbinde deinen Companion. Neue Ereignisse erscheinen hier live.</p></div></div></article>
+    </section>
+    <section id="chat" class="chat" hidden>
+      <div class="chat-heading"><div class="chat-avatar" id="chat-icon">#</div><div><h1 id="chat-title">Channel</h1><p id="chat-subtitle">MeshCore Channel</p></div><span class="pill">LORA MESH</span></div>
+      <div id="messages" class="messages" role="log" aria-live="polite"></div>
+      <form id="composer" class="composer"><label for="message-text" class="sr-only">Nachricht</label><textarea id="message-text" rows="2" placeholder="Schreib etwas ins Mesh …" required></textarea><div class="composer-bottom"><span id="message-counter">0 / 160 Bytes</span><button id="send" class="button primary" type="submit">Nachricht senden <span>↗</span></button></div><p>Enter zum Senden · Shift + Enter für eine neue Zeile</p></form>
+    </section>
+    <footer><span><span class="legend-dot"></span> MESHCORE WEB TERMINAL</span><span id="footer-status">Lokal verbunden. Über Funk vernetzt.</span></footer>
+  </main>
+</body>
+</html>
