@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101614"><title>MeshCore · Web Terminal</title>
+  <script src="/theme.js"></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
@@ -16,6 +17,7 @@
     <div class="section-label">DIREKTNACHRICHTEN <span id="contact-count">0</span></div>
     <label class="search"><span>⌕</span><input id="contact-search" placeholder="Kontakte suchen …" aria-label="Kontakte suchen"></label>
     <div id="contacts" class="nav-list contacts"></div>
+    <label class="theme-picker" for="theme-select"><span>Design</span><select id="theme-select"><option value="dark-green">Dark Green</option><option value="dark-blue">Dark Blue</option><option value="light">Light</option></select></label>
     <div class="sidebar-bottom"><span class="device-icon">▣</span><div><strong id="device-name">Dein Companion</strong><small id="endpoint">192.168.88.14:5000</small></div><span id="device-dot" class="status-dot"></span></div>
   </aside>
   <main>
