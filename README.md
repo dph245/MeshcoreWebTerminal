@@ -7,11 +7,13 @@ Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 - Channel-Nachrichten und Direktnachrichten empfangen und senden
 - Nachrichtenverlauf in SQLite, auch nach Neustarts; ältere Nachrichten nachladen
 - Empfangspfad unter eingehenden Nachrichten, mit Hop-Anzahl und verfügbaren Knoten-Hashes
+- Scope des Absenders unter empfangenen Channel-Nachrichten; aus passenden Funkpaketen zugeordnet und mit dem Verlauf gespeichert. Fehlen passende Paketdaten, bleibt der Scope ausdrücklich nicht verfügbar.
 - DM-Empfangsbestätigungen (ACK), Sendefehler und Verbindungsstatus
 - Live-Repeater-Zähler bei ausgehenden Channel-Nachrichten anhand zurückgehörter Weiterleitungen
 - Netzmonitor mit Live-Funkereignissen, RSSI/SNR, Gerätestatistik und Ereignisfiltern
 - Automatische Neuverbindung; responsive deutsche Oberfläche
 - Standard-Scope im Companion und gespeicherte Scope-Auswahl pro Channel
+- Scope des Absenders in Channel-Funkpaket-Details: Transportcode-Abgleich mit den bekannten Standard- und Channel-Scope-Namen. Passende Namen sind Kandidaten (16-Bit-Kollisionen möglich); unbekannte Namen und Pakete ohne Scope werden ausdrücklich gekennzeichnet. Der Scope-Name selbst wird nicht mitgesendet. Normale Channel-Empfangsereignisse ohne Funkpaket-Header enthalten keinen Scope.
 
 ## Start mit Docker
 

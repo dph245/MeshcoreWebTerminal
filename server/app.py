@@ -3,6 +3,7 @@ import asyncio
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -55,6 +56,52 @@ def receive_path(payload):
 def channel_echo_key(channel_name, channel_hash, timestamp, message):
     return hashlib.sha256(json.dumps([channel_name, channel_hash, timestamp, message],
                                     ensure_ascii=False).encode()).hexdigest()
+
+
+def channel_packet_key(payload):
+    if payload.get("payload_type") != 5:
+        return None
+    if not isinstance(payload.get("message"), str) or not isinstance(payload.get("sender_timestamp"), int):
+        return None
+    if not isinstance(payload.get("chan_name"), str) or not isinstance(payload.get("chan_hash"), str):
+        return None
+    return channel_echo_key(payload["chan_name"], payload["chan_hash"], payload["sender_timestamp"], payload["message"])
+
+
+def packet_scope(payload, known_scopes):
+    """Match RX transport code against known names, never assume our TX scope.
+
+    MeshCore TransportKeyStore.cpp: HMAC-SHA256(scope key, type + payload),
+    truncated to a little-endian uint16, with 0/65535 reserved. A 16-bit match
+    is only a candidate, not proof of the sender's configuration.
+    """
+    route = payload.get("route_type")
+    if route in (1, 2):
+        return {"status": "unscoped"}
+    if route not in (0, 3):
+        return {"status": "unknown"}
+    raw = payload.get("transport_code")
+    if not isinstance(raw, str) or len(raw) != 8 or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        return {"status": "unknown"}
+    code = int.from_bytes(bytes.fromhex(raw)[:2], "little")
+    result = {"status": "scoped", "code": f"0x{code:04X}", "candidates": []}
+    if code in (0, 65535):
+        result["status"] = "unknown"  # Reserved codes cannot identify a named scope.
+        return result
+    packet = payload.get("pkt_payload")
+    kind = payload.get("payload_type")
+    if not isinstance(packet, str) or not packet or len(packet) % 2 or any(c not in "0123456789abcdefABCDEF" for c in packet):
+        return result
+    if not isinstance(kind, int) or not 0 <= kind <= 15:
+        return result
+    data = bytes([kind]) + bytes.fromhex(packet)
+    for name in sorted({s for s in known_scopes if isinstance(s, str) and s.startswith("#")}):
+        key = hashlib.sha256(name.encode("utf-8")).digest()[:16]
+        expected = int.from_bytes(hmac.new(key, data, hashlib.sha256).digest()[:2], "little")
+        expected = max(1, min(65534, expected))
+        if expected == code:
+            result["candidates"].append(name)
+    return result
 
 
 def repeater_echo(payload):
@@ -132,6 +179,20 @@ class Store:
             self.db.execute("INSERT INTO repeater_receipts VALUES(?,?)", (mid, hop))
         return True
 
+    def record_received_scope(self, key, scope):
+        rows = self.db.execute(
+            "SELECT id,reception FROM messages WHERE echo_key=? AND direction='in' AND kind='channel' LIMIT 2",
+            (key,)).fetchall()
+        if len(rows) != 1 or scope.get("status") == "unknown":
+            return False
+        reception = json.loads(rows[0]["reception"]) if rows[0]["reception"] else {}
+        if reception.get("scope"):
+            return False  # Keep the first observed scope, including across later relays.
+        reception["scope"] = scope
+        with self.db:
+            self.db.execute("UPDATE messages SET reception=? WHERE id=?", (json.dumps(reception), rows[0]["id"]))
+        return True
+
     def acknowledge(self, code):
         with self.db:
             self.db.execute("UPDATE messages SET status='delivered' WHERE ack=? AND direction='out'", (code,))
@@ -172,6 +233,7 @@ class Bridge:
         self.channel_hashes = {}
         self.channel_names = {}
         self.recent_echoes = deque(maxlen=300)
+        self.recent_scopes = deque(maxlen=300)
         self.events = deque(maxlen=300)
         self.acks = deque(maxlen=200)
         self.listeners = set()
@@ -195,6 +257,15 @@ class Bridge:
 
     def log(self, kind, payload):
         event = {"time": time.time(), "type": kind, "payload": public(payload)}
+        if kind == "RX_LOG_DATA" and event["payload"].get("payload_type") == 5:
+            event["payload"]["received_scope"] = packet_scope(
+                event["payload"], [self.default_scope, *self.channel_scopes.values()])
+            key = channel_packet_key(event["payload"])
+            if key:
+                scope = event["payload"]["received_scope"]
+                self.recent_scopes.append((key, scope))
+                if self.store.record_received_scope(key, scope):
+                    self.emit("message", {"received_scope": True})
         self.events.append(event)
         self.emit("radio", event)
 
@@ -211,15 +282,25 @@ class Bridge:
         elif name in ("CONTACT_MSG_RECV", "CHANNEL_MSG_RECV"):
             kind = "channel" if name == "CHANNEL_MSG_RECV" else "dm"
             target = str(p["channel_idx"]) if kind == "channel" else p["pubkey_prefix"]
+            key = None
+            if kind == "channel" and target in self.channel_hashes and isinstance(p.get("sender_timestamp"), int):
+                channel_name = self.channel_names.get(target)
+                if channel_name is not None:
+                    key = channel_echo_key(channel_name, self.channel_hashes[target], p["sender_timestamp"], p.get("text", ""))
             # DMs use the protocol's 6-byte prefix, including for unknown senders.
             mid = self.store.save(kind, target, "in", p.get("text", ""),
                                   p.get("sender_timestamp", time.time()), "received",
-                                  reception=receive_path(p))
+                                  reception=receive_path(p), echo_key=key)
+            scope_updated = False
+            if key:
+                for packet_key, scope in self.recent_scopes:
+                    if packet_key == key:
+                        scope_updated = self.store.record_received_scope(key, scope) or scope_updated
             if kind == "dm" and not any(k.startswith(target) for k in self.contacts):
                 self.contacts[target] = {"public_key": target, "adv_name": target, "type": 1, "unknown": True}
                 self.store.set_meta("contacts", self.contacts)
                 self.changed()
-            if mid:
+            if mid or scope_updated:
                 self.emit("message", {"kind": kind, "target": target})
             self.log(name, p)
         elif name == "ACK":

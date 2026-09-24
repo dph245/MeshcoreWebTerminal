@@ -398,3 +398,87 @@ def test_channel_sender_prefix_is_included_in_byte_limit(bridge):
     with pytest.raises(HTTPException):
         asyncio.run(bridge.send('channel', '0', 'x' * 149))
     bridge.radio.commands.send_chan_msg.assert_not_awaited()
+
+
+@pytest.mark.parametrize('name,transport', [('#berlin', 'fa230000'), ('#küste', '947a0000')])
+def test_received_scope_matches_packet_not_own_setting(bridge, name, transport):
+    bridge.default_scope = '#hamburg'
+    bridge.channel_scopes = {'0': name}
+    payload = {'payload_type': 5, 'route_type': 0, 'transport_code': transport,
+               'pkt_payload': 'aabbcc00112233445566778899'}
+    bridge.log('RX_LOG_DATA', payload)
+    result = bridge.events[-1]['payload']['received_scope']
+    assert result['status'] == 'scoped'
+    assert result['candidates'] == [name]
+    assert 'received_scope' not in payload
+    bridge.channel_scopes['0'] = '#other'
+    assert bridge.events[-1]['payload']['received_scope'] == result
+
+
+def test_received_scope_collision_and_unknown():
+    from server.app import packet_scope
+    payload = {'payload_type': 5, 'route_type': 0, 'transport_code': '9a470000',
+               'pkt_payload': 'aabbcc00112233445566778899'}
+    assert packet_scope(payload, ['#test186', '#test275'])['candidates'] == ['#test186', '#test275']
+    assert packet_scope(payload, ['#hamburg']) == {'status': 'scoped', 'code': '0x479A', 'candidates': []}
+    assert packet_scope({**payload, 'route_type': 1}, ['#test186']) == {'status': 'unscoped'}
+    assert packet_scope({}, ['#test186']) == {'status': 'unknown'}
+    assert packet_scope({**payload, 'transport_code': 'oops'}, []) == {'status': 'unknown'}
+    for reserved in ('00000000', 'ffff0000'):
+        assert packet_scope({**payload, 'transport_code': reserved}, [])['status'] == 'unknown'
+    assert packet_scope({**payload, 'pkt_payload': 'f'}, ['#test186'])['candidates'] == []
+    assert packet_scope({**payload, 'pkt_payload': 'zz'}, ['#test186'])['candidates'] == []
+    assert packet_scope({**payload, 'pkt_payload': '00'}, ['#test186'])['candidates'] == []
+
+
+@pytest.mark.parametrize('packet_first', [True, False])
+@pytest.mark.parametrize('scoped', [True, False])
+def test_chat_scope_correlates_both_event_orders(bridge, packet_first, scoped):
+    async def scenario():
+        bridge.channel_hashes = {'0': 'ab'}
+        bridge.channel_names = {'0': 'Public'}
+        bridge.default_scope = '#berlin'
+        packet = echo_event(123, '', route_type=0 if scoped else 1,
+                            transport_code='fa230000', pkt_payload='aabbcc00112233445566778899')
+        message = Event(EventType.CHANNEL_MSG_RECV, {
+            'channel_idx': 0, 'sender_timestamp': 123, 'text': 'Mein Radio: Moin', 'path_len': 0})
+        for event in ([packet, message] if packet_first else [message, packet]):
+            await bridge.on_event(event)
+        item = bridge.store.history('channel', '0')[0]
+        assert item['reception']['hops'] == 0
+        scope = item['reception']['scope']
+        assert scope['status'] == ('scoped' if scoped else 'unscoped')
+        if scoped:
+            assert scope['candidates'] == ['#berlin']
+        # Duplicate inbox deliveries / relays must not overwrite captured metadata.
+        bridge.default_scope = '#other'
+        await bridge.on_event(message)
+        await bridge.on_event(echo_event(123, '', route_type=1))
+        assert bridge.store.history('channel', '0')[0]['reception']['scope'] == scope
+    asyncio.run(scenario())
+
+
+def test_chat_scope_never_matches_other_channel_text_or_time(bridge):
+    async def scenario():
+        bridge.channel_hashes = {'0': 'ab'}
+        bridge.channel_names = {'0': 'Public'}
+        await bridge.on_event(Event(EventType.CHANNEL_MSG_RECV, {
+            'channel_idx': 0, 'sender_timestamp': 123, 'text': 'Mein Radio: Moin', 'path_len': 0}))
+        for change in [{'chan_hash':'cd'}, {'chan_name':'Other'}, {'message':'Different'}, {'sender_timestamp':124}]:
+            await bridge.on_event(echo_event(123, '', **change))
+        assert 'scope' not in bridge.store.history('channel', '0')[0]['reception']
+    asyncio.run(scenario())
+
+
+def test_chat_scope_survives_restart(tmp_path):
+    path = str(tmp_path / 'scopes.db')
+    store = Store(path)
+    store.save('channel', '0', 'in', 'Radio: Hallo', 123, 'received',
+               reception={'routing':'flood','hops':1,'path':['ab']}, echo_key='packet-key')
+    scope = {'status':'scoped','code':'0x1234','candidates':[]}
+    assert store.record_received_scope('packet-key', scope)
+    store.db.close()
+    store = Store(path)
+    assert store.history('channel', '0')[0]['reception']['scope'] == scope
+    assert store.history('channel', '0')[0]['reception']['path'] == ['ab']
+    store.db.close()

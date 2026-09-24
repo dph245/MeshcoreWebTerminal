@@ -7,6 +7,19 @@ function hopName(hash) {
   return matches.length===1 && matches[0][1].adv_name ? `${matches[0][1].adv_name} (${hash})` : hash;
 }
 
+function receivedScopeLabel(p, radio) {
+  if(!radio)return 'Nicht übermittelt · nur im Funkpaket verfügbar';
+  const scope=p.received_scope;
+  if(scope?.status==='unscoped'||[1,2].includes(p.route_type))return 'Ohne Scope';
+  if(scope?.status==='scoped'){
+    const names=scope.candidates||[];
+    if(names.length===1)return `${names[0]} (Code stimmt überein)`;
+    if(names.length>1)return `Mehrdeutig: ${names.join(', ')}`;
+    return 'Scope vorhanden · Name unbekannt';
+  }
+  return 'Nicht bestimmbar';
+}
+
 function describePacket(event) {
   const p=event.payload||{}, fields=[];
   const add=(label,value)=>{if(value!==undefined&&value!==null&&value!=='')fields.push([label,String(value)]);};
@@ -16,6 +29,13 @@ function describePacket(event) {
   add('Empfangen',new Date(event.time*1000).toLocaleString('de-DE'));
   add('Pakettyp',type);
   if(radio)add('Routing',packetRoutes[p.route_type]||'Nicht verfügbar');
+  const channelMessage=(radio&&p.payload_type===5)||event.type==='CHANNEL_MSG_RECV';
+  const scopeLabel=channelMessage?receivedScopeLabel(p,radio):null;
+  if(channelMessage){
+    add('Scope des Absenders',scopeLabel);
+    add('Scope-Transportcode',p.received_scope?.code);
+    if(p.received_scope?.candidates?.length)add('Scope-Zuordnung','Abgleich mit bekannten Scope-Namen; der 16-Bit-Code kann mehrdeutig sein.');
+  }
   const name=p.adv_name||p.chan_name;
   add(p.adv_name?'Knotenname':'Channel',name);
   add('Channel-Kennung',p.chan_hash);
@@ -47,7 +67,7 @@ function describePacket(event) {
   else if(radio&&p.payload_type===3)content='Empfangsbestätigung für eine Nachricht';
   else if(event.type==='RAW_DATA')content='Binäre Anwendungsdaten · kein Klartext verfügbar';
   else content=p.address||name||key||'Details und Rohdaten verfügbar';
-  const parts=[name,radio?packetRoutes[p.route_type]:null,content].filter(Boolean);
+  const parts=[name,radio?packetRoutes[p.route_type]:null,scopeLabel?`Scope: ${scopeLabel}`:null,content].filter(Boolean);
   return {type,summary:parts.join(' · '),fields,message};
 }
 

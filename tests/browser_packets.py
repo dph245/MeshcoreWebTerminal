@@ -25,10 +25,13 @@ with sync_playwright() as p:
     browser = p.chromium.launch(executable_path='/usr/bin/chromium', headless=True)
     page = browser.new_page(viewport={'width': 1440, 'height': 1000})
     errors = []
+    messages = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     def route(request):
         path = request.request.url.split('http://mesh.test/')[1]
-        if path.startswith('api/'):
+        if path.startswith('api/messages'):
+            request.fulfill(json=messages)
+        elif path.startswith('api/'):
             request.fulfill(json=state)
         else:
             request.fulfill(path=STATIC / (path or 'index.html'))
@@ -66,6 +69,45 @@ with sync_playwright() as p:
     page.locator('#events tr').filter(has_text='Direct ·').get_by_role('button').click()
     expect(page.locator('#packet-fields')).to_contain_text('Routing-Pfad')
     expect(page.locator('#packet-fields')).not_to_contain_text('Empfangspfad')
+    page.keyboard.press('Escape')
+    for scope, route_type, label in [
+        ({'status':'scoped','code':'0x23FA','candidates':['#berlin']}, 0, '#berlin (Code stimmt überein)'),
+        ({'status':'scoped','code':'0x479A','candidates':[]}, 0, 'Scope vorhanden · Name unbekannt'),
+        ({'status':'scoped','code':'0x479A','candidates':['#eins','#zwei']}, 0, 'Mehrdeutig: #eins, #zwei'),
+        ({'status':'unscoped'}, 1, 'Ohne Scope'),
+        ({'status':'unknown'}, 0, 'Nicht bestimmbar'),
+    ]:
+        event = {'type':'RX_LOG_DATA','time':1700000000,'payload':{
+            'payload_type':5,'route_type':route_type,'message':'Scope-Test','received_scope':scope}}
+        page.evaluate('(event)=>showPacket(event)', event)
+        expect(page.locator('#packet-fields')).to_contain_text('Scope des Absenders')
+        expect(page.locator('#packet-fields')).to_contain_text(label)
+        if scope.get('code'):
+            expect(page.locator('#packet-fields')).to_contain_text(scope['code'])
+        page.keyboard.press('Escape')
+    page.evaluate("showPacket({type:'CHANNEL_MSG_RECV',time:1700000000,payload:{text:'Hallo'}})")
+    expect(page.locator('#packet-fields')).to_contain_text('Nicht übermittelt')
+    page.keyboard.press('Escape')
+    messages[:] = [
+        {'id':1,'direction':'in','text':'Mit Scope','timestamp':1700000000,'status':'received',
+         'reception':{'routing':'flood','hops':1,'path':['ab'],'scope':{'status':'scoped','code':'0x23FA','candidates':['#berlin']}}},
+        {'id':2,'direction':'in','text':'Ohne Scope','timestamp':1700000001,'status':'received',
+         'reception':{'routing':'flood','hops':0,'path':[],'scope':{'status':'unscoped'}}},
+        {'id':3,'direction':'in','text':'Alter Verlauf','timestamp':1700000002,'status':'received','reception':None},
+    ]
+    page.evaluate("openChat({kind:'channel',target:'0',name:'Public'})")
+    expect(page.locator('.message-scope')).to_have_count(3)
+    expect(page.locator('.message-scope').nth(0)).to_contain_text('#berlin')
+    expect(page.locator('.message-scope').nth(1)).to_contain_text('Ohne Scope')
+    expect(page.locator('.message-scope').nth(2)).to_contain_text('Nicht verfügbar')
+    messages[2]['reception']={'scope':{'status':'scoped','code':'0x1111','candidates':[]}}
+    page.evaluate("testStream.listeners.message({data:'{}'})")
+    expect(page.locator('.message-scope').nth(2)).to_contain_text('Name unbekannt')
+    expect(page.locator('.message').nth(2)).to_contain_text('Empfangspfad: nicht verfügbar')
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path='/tmp/mesh-chat-scopes.png', full_page=True)
+    page.evaluate("openChat({kind:'dm',target:'ab',name:'Dach'})")
+    expect(page.locator('.message-scope')).to_have_count(0)
     assert not errors, errors
     browser.close()
 print('Packet browser checks passed: readable metadata, encrypted/unknown/raw packets, aliases, XSS, live updates, themes and mobile dialog.')

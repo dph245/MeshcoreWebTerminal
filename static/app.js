@@ -19,7 +19,7 @@ async function api(path, body) {
 }
 function contactName(key) { const found=Object.entries(state.contacts).find(([k])=>k.startsWith(key)); return found?.[1]?.adv_name || key; }
 function receptionLabel(reception) {
-  if(!reception || reception.routing==='unknown') return 'Empfangspfad: nicht verfügbar';
+  if(!reception || !['flood','direct'].includes(reception.routing)) return 'Empfangspfad: nicht verfügbar';
   if(reception.routing==='direct') return 'Empfangspfad: Direct-Routing · Knotenfolge nicht übermittelt';
   if(reception.hops===0) return 'Empfangspfad: direkt empfangen · 0 Hops';
   const count=`${reception.hops} ${reception.hops===1?'Hop':'Hops'}`;
@@ -216,6 +216,11 @@ async function loadMessages(before=null) {
       const sender=message.direction==='out'?'Du':selection.kind==='dm'?contactName(message.target):selection.name;
       wrap.append(node('div','bubble',message.text));
       if(message.direction==='in') wrap.append(node('div','message-path',receptionLabel(message.reception)));
+      if(message.direction==='in'&&selection.kind==='channel') {
+        const scope=message.reception?.scope;
+        const label=scope?receivedScopeLabel({received_scope:scope},true):'Nicht verfügbar · kein zugeordnetes Funkpaket';
+        wrap.append(node('div','message-path message-scope',`Scope des Absenders · ${label}`));
+      }
       const meta=node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`);
       if(message.repeater_count>0) meta.title='Anhand zurückgehörter Weiterleitungen: unterschiedliche letzte Hop-Hashes, keine vollständige Empfangsbestätigung. Hash-Kollisionen können die Anzahl verringern.';
       wrap.append(meta);fragment.append(wrap);
