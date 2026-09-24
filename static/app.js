@@ -202,10 +202,13 @@ async function loadMessages(before=null) {
     for(const message of messageRows) {
       const wrap=node('article',`message ${message.direction}`);
       const labels={received:'Empfangen',sent:selection.kind==='dm'?'An Companion übergeben · unbestätigt':'An Companion übergeben',delivered:'Zugestellt ✓'};
+      if(message.direction==='out'&&selection.kind==='channel'&&message.repeater_count>0) labels.sent=`von ${message.repeater_count} ${message.repeater_count===1?'Repeater':'Repeatern'} empfangen`;
       const sender=message.direction==='out'?'Du':selection.kind==='dm'?contactName(message.target):selection.name;
       wrap.append(node('div','bubble',message.text));
       if(message.direction==='in') wrap.append(node('div','message-path',receptionLabel(message.reception)));
-      wrap.append(node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`));fragment.append(wrap);
+      const meta=node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`);
+      if(message.repeater_count>0) meta.title='Anhand zurückgehörter Weiterleitungen: unterschiedliche letzte Hop-Hashes, keine vollständige Empfangsbestätigung. Hash-Kollisionen können die Anzahl verringern.';
+      wrap.append(meta);fragment.append(wrap);
     }
     list.append(fragment);
     if(before) list.scrollTop=oldTop+list.scrollHeight-oldHeight;
@@ -214,9 +217,10 @@ async function loadMessages(before=null) {
 }
 function updateComposer() {
   const length=encoder.encode($('message-text').value.trim()).length;
-  $('message-counter').textContent=`${length} / 160 Bytes`;
-  $('message-counter').classList.toggle('danger',length>160);
-  $('send').disabled=sending||scopeSaving||channelSaving||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>160;
+  const limit=selection?.kind==='channel'&&state.info.name?Math.max(0,160-encoder.encode(`${state.info.name}: `).length):160;
+  $('message-counter').textContent=`${length} / ${limit} Bytes`;
+  $('message-counter').classList.toggle('danger',length>limit);
+  $('send').disabled=sending||scopeSaving||channelSaving||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>limit;
   $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
 }
 $('monitor-nav').onclick=()=>{rememberDraft();selection=null;historyVersion++;$('monitor').hidden=false;$('chat').hidden=true;$('breadcrumb-title').textContent='Netzmonitor';renderNav();};

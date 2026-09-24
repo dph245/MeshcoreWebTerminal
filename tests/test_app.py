@@ -10,6 +10,7 @@ from meshcore.events import Event
 
 from server.app import Bridge, Store, ScopeInput, create_app, public, normalize_scope, receive_path
 from server.app import ChannelInput, ChannelRemoveInput, normalize_channel
+from server.app import channel_echo_key, repeater_echo
 
 
 KEY = 'abcdef123456' + 'ab' * 26
@@ -335,3 +336,65 @@ def test_channel_readback_mismatch_blocks_sends(bridge):
 def test_invalid_hashtag_name(name):
     with pytest.raises(HTTPException):
         normalize_channel(name)
+
+
+def echo_event(timestamp, route_path='aa0001', **changes):
+    payload = {'payload_type': 5, 'route_type': 1, 'chan_name': 'Public', 'chan_hash': 'ab',
+               'sender_timestamp': timestamp, 'message': 'Mein Radio: Moin',
+               'path_len': len(route_path)//6, 'path_hash_size': 3, 'path': route_path}
+    payload.update(changes)
+    return Event(EventType.RX_LOG_DATA, payload)
+
+
+def test_outgoing_channel_echo_count_and_deduplication(bridge):
+    async def scenario():
+        bridge.info = {'name': 'Mein Radio'}
+        bridge.channel_hashes = {'0': 'ab'}
+        await bridge.send('channel', '0', 'Moin')
+        message = bridge.store.history('channel', '0')[0]
+        timestamp = int(message['timestamp'])
+        assert message['repeater_count'] == 0
+        for path in ['aa0001', 'aa0001', 'bb0002aa0001', 'bb0002', 'cc0003', 'dd0004']:
+            await bridge.on_event(echo_event(timestamp, path))
+        assert bridge.store.history('channel', '0')[0]['repeater_count'] == 4
+        for changes in [{'message': 'Fremdes Radio: Moin'}, {'chan_name': '#anders'}, {'chan_hash': 'cd'},
+                        {'sender_timestamp': timestamp+1}, {'route_type': 2}, {'payload_type': 4},
+                        {'path_len': 0, 'path': ''}, {'path': 'nohex!'}]:
+            await bridge.on_event(echo_event(timestamp, 'ee0005', **changes))
+        assert bridge.store.history('channel', '0')[0]['repeater_count'] == 4
+    asyncio.run(scenario())
+
+
+def test_echo_before_send_response(bridge):
+    async def scenario():
+        bridge.info = {'name': 'Mein Radio'}
+        bridge.channel_hashes = {'0': 'ab'}
+        async def send(index, text, timestamp):
+            await bridge.on_event(echo_event(timestamp))
+            return Event(EventType.OK, {})
+        bridge.radio.commands.send_chan_msg.side_effect = send
+        await bridge.send('channel', '0', 'Moin')
+        assert bridge.store.history('channel', '0')[0]['repeater_count'] == 1
+    asyncio.run(scenario())
+
+
+def test_repeater_count_survives_restart_and_ignores_ambiguous_transmission(tmp_path):
+    path = str(tmp_path / 'echo.db')
+    store = Store(path)
+    key = channel_echo_key('#test', 'ab', 123, 'Radio: Moin')
+    store.save('channel', '0', 'out', 'Moin', 123, 'sent', echo_key=key)
+    assert store.record_repeater(key, 'ab1234')
+    assert not store.record_repeater(key, 'ab')
+    store.db.close()
+    store = Store(path)
+    assert store.history('channel', '0')[0]['repeater_count'] == 1
+    store.save('channel', '0', 'out', 'Moin', 123, 'sent', echo_key=key)
+    assert not store.record_repeater(key, 'cd5678')
+    store.db.close()
+
+
+def test_channel_sender_prefix_is_included_in_byte_limit(bridge):
+    bridge.info = {'name': 'Mein Radio'}
+    with pytest.raises(HTTPException):
+        asyncio.run(bridge.send('channel', '0', 'x' * 149))
+    bridge.radio.commands.send_chan_msg.assert_not_awaited()

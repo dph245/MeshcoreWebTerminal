@@ -8,6 +8,7 @@ Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 - Nachrichtenverlauf in SQLite, auch nach Neustarts; ältere Nachrichten nachladen
 - Empfangspfad unter eingehenden Nachrichten, mit Hop-Anzahl und verfügbaren Knoten-Hashes
 - DM-Empfangsbestätigungen (ACK), Sendefehler und Verbindungsstatus
+- Live-Repeater-Zähler bei ausgehenden Channel-Nachrichten anhand zurückgehörter Weiterleitungen
 - Netzmonitor mit Live-Funkereignissen, RSSI/SNR, Gerätestatistik und Ereignisfiltern
 - Automatische Neuverbindung; responsive deutsche Oberfläche
 - Standard-Scope im Companion und gespeicherte Scope-Auswahl pro Channel
@@ -64,7 +65,8 @@ Die Protokollrahmen folgen der [Companion-Firmware](https://github.com/meshcore-
 - Empfangen werden neue und noch im Companion gepufferte Nachrichten. Eine frühere Historie anderer Clients kann nicht nachträglich abgerufen werden.
 - Empfangspfade werden zusammen mit neuen Nachrichten gespeichert. Bei Channels ergänzt die Bibliothek die Knotenfolge aus passenden entschlüsselten Funklogs, soweit diese während der Verbindung empfangen wurden. Eindeutige Kontakt-Präfixe werden zusätzlich als Namen angezeigt; mehrdeutige oder unbekannte bleiben als Hash sichtbar. DMs liefern häufig nur die Hop-Anzahl oder „Direct-Routing“ ohne Knotenfolge. Direct-Routing ist nicht gleichbedeutend mit null Hops. Fehlen Funklogs oder wurden Nachrichten vor dieser Erweiterung gespeichert, zeigt die Oberfläche die verfügbaren Angaben bzw. „nicht verfügbar“. Bestehende Datenbanken werden ohne Verlust des Verlaufs erweitert.
 - „An Companion übergeben“ bestätigt die Übergabe an das Gerät. Nur ein DM-ACK führt zu „Zugestellt“. Channel-Nachrichten haben keine individuelle Empfangsbestätigung.
-- Ausgehende Texte sind auf konservative 160 UTF-8-Bytes begrenzt. Umlaute und Emojis können mehrere Bytes belegen. Bei unklarem Sendestatus erfolgt kein automatischer Neuversand.
+- Bei ausgehenden Channel-Nachrichten wechselt die Anzeige nach passenden Funk-Echos zu „von 1 Repeater empfangen“, „von 2 Repeatern empfangen“ usw. Abgeglichen werden Channel-Name/-Hash, Sendezeit und vollständiger Nachrichtentext einschließlich Absender. Gezählt werden unterschiedliche letzte Hop-Hashes zurückgehörter Weiterleitungen, nicht die Länge des Pfads. Wiederholte Echos desselben Repeaters zählen einmal; die Anzahl bleibt nach Neustarts erhalten. Das ist eine beobachtete Mindestanzahl, keine vollständige Empfangsbestätigung: Nicht zurückgehörte Repeater fehlen, kurze Hashes können kollidieren. Ohne passende Echos bleibt „An Companion übergeben“ stehen. DMs verwenden weiterhin ACKs.
+- Ausgehende Texte sind auf 160 UTF-8-Bytes begrenzt; bei Channels wird der Platz für den Absendernamen samt „: “ abgezogen, damit die Firmware den Text nicht abschneidet. Die Oberfläche zeigt das verbleibende Limit. Umlaute und Emojis können mehrere Bytes belegen. Bei unklarem Sendestatus erfolgt kein automatischer Neuversand.
 - Der Netzmonitor sieht die vom eigenen Companion gelieferten Ereignisse, keine vollständige Netztopologie. Rohpakete und Statistikfelder hängen von Firmware und Funkverkehr ab. Fehlende Werte erscheinen als `—`. Die letzten 300 Ereignisse liegen im Arbeitsspeicher; die Aktivitätsgrafik zählt die darin beobachteten Funkpakete.
 - Die API liefert weder Channel-Schlüssel noch Geräte-PINs aus. Nachrichten werden lokal unverschlüsselt in SQLite gespeichert.
 

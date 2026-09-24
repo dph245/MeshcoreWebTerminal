@@ -52,6 +52,28 @@ def receive_path(payload):
     return result
 
 
+def channel_echo_key(channel_name, channel_hash, timestamp, message):
+    return hashlib.sha256(json.dumps([channel_name, channel_hash, timestamp, message],
+                                    ensure_ascii=False).encode()).hexdigest()
+
+
+def repeater_echo(payload):
+    """Identify a decrypted channel echo and its last (audible) forwarding hop."""
+    if payload.get("payload_type") != 5 or payload.get("route_type") not in (0, 1):
+        return None
+    count, size, path = payload.get("path_len"), payload.get("path_hash_size"), payload.get("path")
+    if not isinstance(count, int) or not 1 <= count <= 63 or size not in (1, 2, 3):
+        return None
+    if not isinstance(path, str) or len(path) != count * size * 2 or any(c not in "0123456789abcdefABCDEF" for c in path):
+        return None
+    if not isinstance(payload.get("message"), str) or not isinstance(payload.get("sender_timestamp"), int):
+        return None
+    if not isinstance(payload.get("chan_name"), str) or not isinstance(payload.get("chan_hash"), str):
+        return None
+    key = channel_echo_key(payload["chan_name"], payload["chan_hash"], payload["sender_timestamp"], payload["message"])
+    return key, path[-size * 2:].lower()
+
+
 class Store:
     def __init__(self, path):
         if path != ":memory:":
@@ -71,27 +93,44 @@ class Store:
         if "reception" not in {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}:
             with self.db:
                 self.db.execute("ALTER TABLE messages ADD COLUMN reception TEXT")
+        with self.db:
+            if "echo_key" not in {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}:
+                self.db.execute("ALTER TABLE messages ADD COLUMN echo_key TEXT")
+            self.db.execute("CREATE INDEX IF NOT EXISTS message_echo ON messages(echo_key)")
+            self.db.execute("CREATE TABLE IF NOT EXISTS repeater_receipts (message_id INTEGER, hop TEXT, PRIMARY KEY(message_id, hop))")
 
-    def save(self, kind, target, direction, text, timestamp, status, ack=None, reception=None):
+    def save(self, kind, target, direction, text, timestamp, status, ack=None, reception=None, echo_key=None):
         fingerprint = None
         if direction == "in":
             fingerprint = hashlib.sha256(json.dumps(
                 [kind, target, text, timestamp], ensure_ascii=False).encode()).hexdigest()
         with self.db:
             cursor = self.db.execute(
-                "INSERT OR IGNORE INTO messages(kind,target,direction,text,timestamp,status,ack,fingerprint,reception) VALUES(?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO messages(kind,target,direction,text,timestamp,status,ack,fingerprint,reception,echo_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (kind, target, direction, text, timestamp, status, ack, fingerprint,
-                 json.dumps(reception) if reception is not None else None))
+                 json.dumps(reception) if reception is not None else None, echo_key))
         return cursor.lastrowid if cursor.rowcount else None
 
     def history(self, kind, target, before=None):
         rows = self.db.execute(
-            "SELECT * FROM messages WHERE kind=? AND target=? AND id<? ORDER BY id DESC LIMIT 100",
+            "SELECT *, (SELECT count(*) FROM repeater_receipts WHERE message_id=messages.id) AS repeater_count FROM messages WHERE kind=? AND target=? AND id<? ORDER BY id DESC LIMIT 100",
             (kind, target, before or 9223372036854775807)).fetchall()
         result = [dict(row) for row in reversed(rows)]
         for message in result:
             message["reception"] = json.loads(message["reception"]) if message["reception"] else None
         return result
+
+    def record_repeater(self, key, hop):
+        rows = self.db.execute("SELECT id FROM messages WHERE echo_key=? AND direction='out' AND kind='channel' LIMIT 2", (key,)).fetchall()
+        if len(rows) != 1:
+            return False  # Ambiguous identical transmissions cannot be attributed safely.
+        mid = rows[0][0]
+        known = [row[0] for row in self.db.execute("SELECT hop FROM repeater_receipts WHERE message_id=?", (mid,))]
+        if any(hop.startswith(old) or old.startswith(hop) for old in known):
+            return False  # Repeated echoes / overlapping short hashes count once.
+        with self.db:
+            self.db.execute("INSERT INTO repeater_receipts VALUES(?,?)", (mid, hop))
+        return True
 
     def acknowledge(self, code):
         with self.db:
@@ -130,6 +169,9 @@ class Bridge:
         self.default_scope = None
         self.scope_supported = False
         self.channel_scopes = store.get_meta("channel_scopes", {})
+        self.channel_hashes = {}
+        self.channel_names = {}
+        self.recent_echoes = deque(maxlen=300)
         self.events = deque(maxlen=300)
         self.acks = deque(maxlen=200)
         self.listeners = set()
@@ -192,6 +234,10 @@ class Bridge:
             self.status = "reconnecting" if self.desired else "offline"
             self.changed()
         elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "PATH_UPDATE", "TRACE_DATA"):
+            if name == "RX_LOG_DATA" and (echo := repeater_echo(p)):
+                self.recent_echoes.append(echo)
+                if self.store.record_repeater(*echo):
+                    self.emit("message", {"repeater_echo": True})
             self.log(name, p)
 
     async def command(self, method, *args):
@@ -227,6 +273,9 @@ class Bridge:
                 self.channel_scopes.pop(str(previous["index"]), None)
         self.store.set_meta("channel_scopes", self.channel_scopes)
         self.channels = channels
+        self.channel_hashes = {str(i): hashlib.sha256(p["channel_secret"]).hexdigest()[:2]
+                               for i, p in slots.items() if isinstance(p.get("channel_secret"), bytes)}
+        self.channel_names = {str(i): p.get("channel_name", "") for i, p in slots.items()}
         self.store.set_meta("channels", channels)
         self.changed()
         return slots
@@ -268,6 +317,8 @@ class Bridge:
                 self.changed()
                 raise
             self.store.archive_channel(index)
+            self.channel_hashes[str(index)] = hashlib.sha256(expected_secret).hexdigest()[:2]
+            self.channel_names[str(index)] = expected_name
             self.channel_scopes.pop(str(index), None)
             self.store.set_meta("channel_scopes", self.channel_scopes)
             self.channels = [c for c in self.channels if c["index"] != index]
@@ -388,10 +439,19 @@ class Bridge:
             raise HTTPException(422, "Die Nachricht darf höchstens 160 UTF-8-Bytes enthalten.")
         async with self.lock:
             self.require_ready()
+            if kind == "channel" and self.info.get("name"):
+                limit = max(0, 160 - len(f"{self.info['name']}: ".encode("utf-8")))
+                if len(text.encode("utf-8")) > limit:
+                    raise HTTPException(422, f"Mit deinem Absendernamen passen höchstens {limit} UTF-8-Bytes in eine Channel-Nachricht.")
             timestamp = int(time.time())
+            echo_key = None
             if kind == "channel":
                 if target not in {str(c["index"]) for c in self.channels}:
                     raise HTTPException(404, "Channel nicht gefunden.")
+                if target in self.channel_hashes and self.info.get("name"):
+                    channel_name = self.channel_names.get(target, next(c["name"] for c in self.channels if str(c["index"]) == target))
+                    echo_key = channel_echo_key(channel_name, self.channel_hashes[target], timestamp,
+                                                f"{self.info['name']}: {text}")
                 scope = self.channel_scopes.get(target, "")
                 supports_scope = int(self.device.get("fw ver", 0)) >= 8
                 if scope and not supports_scope:
@@ -420,7 +480,11 @@ class Bridge:
                 target = target[:12]
             ack = public(result.payload).get("expected_ack") if kind == "dm" else None
             status = "delivered" if ack and ack in self.acks else "sent"
-            mid = self.store.save(kind, target, "out", text, timestamp, status, ack)
+            mid = self.store.save(kind, target, "out", text, timestamp, status, ack, echo_key=echo_key)
+            if echo_key:
+                for key, hop in self.recent_echoes:
+                    if key == echo_key:
+                        self.store.record_repeater(key, hop)
             self.emit("message", {"kind": kind, "target": target})
             self.log("MESSAGE_SENT", {"kind": kind, "target": target, "text": text})
             return {"id": mid, "status": status}

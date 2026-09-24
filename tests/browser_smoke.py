@@ -122,6 +122,11 @@ with sync_playwright() as p:
     assert page.locator('.bubble img').count() == 0
     assert sent[-1]['kind'] == 'channel'
     expect(page.locator('#message-text')).to_have_value('')
+    expect(page.locator('.message-meta')).to_contain_text('An Companion übergeben')
+    for count in range(1,5):
+        messages[0]['repeater_count']=count
+        page.evaluate("stream.listeners.message({data:'{}'})")
+        expect(page.locator('.message-meta')).to_contain_text(f'von {count} '+('Repeater' if count==1 else 'Repeatern')+' empfangen')
     messages.clear()
     page.locator('#contacts button').click()
     page.locator('#message-text').fill('Hallo Testkontakt')
