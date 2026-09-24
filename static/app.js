@@ -158,10 +158,20 @@ function renderEvents() {
   $('event-count').textContent=state.events.length;
   $('events-empty').hidden=events.length>0;
   $('events').replaceChildren(...events.slice().reverse().map(e=>{
-    const p=e.payload, row=node('tr');
-    const summary=p.text||p.message||p.address||p.pubkey_prefix||p.public_key||p.payload||JSON.stringify(p);
-    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), eventNames[e.type]||e.type, typeof summary==='string'?summary:JSON.stringify(summary), p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
-    for(const value of values){const cell=node('td','',value);cell.title=String(value);row.append(cell);} return row;
+    const p=e.payload||{}, row=node('tr');
+    const description=describePacket(e);
+    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), description.type, description.summary, p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
+    values.forEach((value,index)=>{
+      const cell=node('td','',index===2?undefined:value);
+      if(index===2){
+        cell.className='event-description';
+        cell.append(node('span','',value));
+        const button=node('button','packet-open','Details ansehen');
+        button.type='button';button.onclick=()=>showPacket(e);cell.append(button);
+      }else cell.title=String(value);
+      row.append(cell);
+    });
+    return row;
   }));
 }
 function renderChart() {

@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101614"><title>MeshCore · Web Terminal</title>
   <script src="/theme.js"></script>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/packets.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -47,5 +47,9 @@
     </section>
     <footer><span><span class="legend-dot"></span> MESHCORE WEB TERMINAL</span><span id="footer-status">Lokal verbunden. Über Funk vernetzt.</span></footer>
   </main>
+  <dialog id="packet-dialog" aria-labelledby="packet-title">
+    <div class="panel-heading"><h2 id="packet-title">Funkpaket</h2><form method="dialog"><button class="button compact" autofocus>Schließen</button></form></div>
+    <div class="packet-body"><p id="packet-summary"></p><dl id="packet-fields"></dl><pre id="packet-message" hidden></pre><details><summary>Technische Rohdaten</summary><pre id="packet-raw"></pre></details></div>
+  </dialog>
 </body>
 </html>
