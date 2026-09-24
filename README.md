@@ -3,8 +3,10 @@
 Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 
 - Vorhandene Channels und Chat-Kontakte vom Companion laden
+- Hashtag-Channels im Companion hinzufügen und entfernen, einschließlich Rückleseprüfung
 - Channel-Nachrichten und Direktnachrichten empfangen und senden
 - Nachrichtenverlauf in SQLite, auch nach Neustarts; ältere Nachrichten nachladen
+- Empfangspfad unter eingehenden Nachrichten, mit Hop-Anzahl und verfügbaren Knoten-Hashes
 - DM-Empfangsbestätigungen (ACK), Sendefehler und Verbindungsstatus
 - Netzmonitor mit Live-Funkereignissen, RSSI/SNR, Gerätestatistik und Ereignisfiltern
 - Automatische Neuverbindung; responsive deutsche Oberfläche
@@ -57,8 +59,10 @@ In jedem Channel stehen **Companion-Standard**, **Ohne Scope** und **Eigene Regi
 
 Die Protokollrahmen folgen der [Companion-Firmware](https://github.com/meshcore-dev/MeshCore/blob/main/examples/companion_radio/MyMesh.cpp). Der Adapter behandelt UTF-8-Padding und das Löschen des Standard-Scopes selbst, da `meshcore` 2.3.14 diese Fälle nicht korrekt kodiert.
 
-- Channels und Kontakte werden aus der bestehenden Companion-Konfiguration gelesen. Channel-Anlage, Schlüsselverwaltung und Kontakt-Import sind noch nicht Bestandteil dieser Version.
+- Über „Channels verwalten“ lassen sich Hashtag-Channels hinzufügen und vom Companion entfernen. Namen erhalten automatisch ein führendes `#`, bleiben ansonsten einschließlich Groß-/Kleinschreibung erhalten und dürfen maximal 31 UTF-8-Bytes umfassen. Der Schlüssel wird gemäß MeshCore aus den ersten 16 Bytes von SHA-256 des vollständigen Namens abgeleitet. Belegte Plätze werden nicht überschrieben; beim Entfernen werden Name und Schlüssel auf dem Companion geleert. Jede Änderung wird zurückgelesen. Private Channels und Kontakt-Import sind nicht Bestandteil dieser Verwaltung.
+- Beim Entfernen oder erkannten Austausch eines Channels wird dessen lokaler Verlauf in SQLite archiviert und die lokale Scope-Auswahl entfernt. Archivierte Nachrichten werden nicht im Verlauf eines neu belegten Channel-Platzes angezeigt; eine Archivansicht gibt es noch nicht. Tests der Verwaltung verwenden ausschließlich simulierte Companion-Schreibvorgänge.
 - Empfangen werden neue und noch im Companion gepufferte Nachrichten. Eine frühere Historie anderer Clients kann nicht nachträglich abgerufen werden.
+- Empfangspfade werden zusammen mit neuen Nachrichten gespeichert. Bei Channels ergänzt die Bibliothek die Knotenfolge aus passenden entschlüsselten Funklogs, soweit diese während der Verbindung empfangen wurden. Eindeutige Kontakt-Präfixe werden zusätzlich als Namen angezeigt; mehrdeutige oder unbekannte bleiben als Hash sichtbar. DMs liefern häufig nur die Hop-Anzahl oder „Direct-Routing“ ohne Knotenfolge. Direct-Routing ist nicht gleichbedeutend mit null Hops. Fehlen Funklogs oder wurden Nachrichten vor dieser Erweiterung gespeichert, zeigt die Oberfläche die verfügbaren Angaben bzw. „nicht verfügbar“. Bestehende Datenbanken werden ohne Verlust des Verlaufs erweitert.
 - „An Companion übergeben“ bestätigt die Übergabe an das Gerät. Nur ein DM-ACK führt zu „Zugestellt“. Channel-Nachrichten haben keine individuelle Empfangsbestätigung.
 - Ausgehende Texte sind auf konservative 160 UTF-8-Bytes begrenzt. Umlaute und Emojis können mehrere Bytes belegen. Bei unklarem Sendestatus erfolgt kein automatischer Neuversand.
 - Der Netzmonitor sieht die vom eigenen Companion gelieferten Ereignisse, keine vollständige Netztopologie. Rohpakete und Statistikfelder hängen von Firmware und Funkverkehr ab. Fehlende Werte erscheinen als `—`. Die letzten 300 Ereignisse liegen im Arbeitsspeicher; die Aktivitätsgrafik zählt die darin beobachteten Funkpakete.

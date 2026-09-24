@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from meshcore import EventType
 from meshcore.events import Event
 
-from server.app import Bridge, Store, ScopeInput, create_app, public, normalize_scope
+from server.app import Bridge, Store, ScopeInput, create_app, public, normalize_scope, receive_path
+from server.app import ChannelInput, ChannelRemoveInput, normalize_channel
 
 
 KEY = 'abcdef123456' + 'ab' * 26
@@ -204,3 +205,133 @@ def test_failed_default_write_keeps_previous_value(bridge):
     with pytest.raises(RuntimeError):
         asyncio.run(bridge.save_scope(ScopeInput(scope='new')))
     assert bridge.default_scope == '#old'
+
+
+@pytest.mark.parametrize(('payload', 'expected'), [
+    ({'path_len': 2, 'path_hash_mode': 0, 'path': 'a1b2'}, ['a1', 'b2']),
+    ({'path_len': 2, 'path_hash_mode': 1, 'path': 'a100b200'}, ['a100', 'b200']),
+    ({'path_len': 2, 'path_hash_mode': 2, 'path': 'a10000b20000'}, ['a10000', 'b20000']),
+    ({'path_len': 2, 'path_hash_mode': 2, 'path': 'a1b2'}, None),
+    ({'path_len': 2, 'path_hash_mode': 0, 'path': 'zzzz'}, None),
+    ({'path_len': 3}, None),
+    ({'path_len': 0}, []),
+])
+def test_receive_path_hash_width_and_missing_data(payload, expected):
+    assert receive_path(payload)['path'] == expected
+
+
+def test_direct_routing_is_not_zero_hops():
+    assert receive_path({'path_len': 255, 'path_hash_mode': -1}) == {'routing': 'direct', 'hops': None, 'path': None}
+    assert receive_path({})['routing'] == 'unknown'
+
+
+def test_old_database_migration_and_reception_persistence(tmp_path):
+    import sqlite3
+    path = str(tmp_path / 'old.db')
+    db = sqlite3.connect(path)
+    db.execute('CREATE TABLE messages(id INTEGER PRIMARY KEY, kind TEXT, target TEXT, direction TEXT, text TEXT, timestamp REAL, status TEXT, ack TEXT, fingerprint TEXT UNIQUE)')
+    db.execute("INSERT INTO messages VALUES(1,'channel','0','in','Alt',123,'received',NULL,NULL)")
+    db.commit()
+    db.close()
+    store = Store(path)
+    assert store.history('channel', '0')[0]['reception'] is None
+    reception = receive_path({'path_len': 1, 'path_hash_mode': 2, 'path': 'ab0012'})
+    store.save('channel', '0', 'in', 'Neu', 124, 'received', reception=reception)
+    store.db.close()
+    store = Store(path)
+    assert store.history('channel', '0')[1]['reception'] == reception
+    store.db.close()
+
+
+def test_channel_path_from_real_protocol_parser(bridge):
+    from Crypto.Cipher import AES
+    from Crypto.Hash import SHA256, HMAC
+    from meshcore.reader import MessageReader
+    async def scenario():
+        dispatcher = SimpleNamespace(dispatch=AsyncMock())
+        reader = MessageReader(dispatcher)
+        reader.decrypt_channels = True
+        secret = bytes(range(16))
+        chan_hash = SHA256.new(secret).digest()[:1]
+        await reader.packet_parser.newChannel({'channel_idx': 0, 'channel_name': 'Public', 'channel_hash': chan_hash.hex(), 'channel_secret': secret})
+        timestamp = (123456).to_bytes(4, 'little')
+        text = b'Test: Moin'
+        plain = timestamp + b'\x00' + text
+        cipher = AES.new(secret, AES.MODE_ECB).encrypt(plain.ljust(16, b'\x00'))
+        mac = HMAC.new(secret, cipher, digestmod=SHA256).digest()[:2]
+        # Flood group text, two 3-byte hop hashes, then encrypted payload.
+        packet = b'\x15\x82' + bytes.fromhex('ab0012cd0034') + chan_hash + mac + cipher
+        await reader.handle_rx(bytearray(b'\x88\x10\x9c' + packet))
+        await reader.handle_rx(bytearray(b'\x11\x10\x00\x00\x00\x82\x00' + timestamp + text))
+        event = dispatcher.dispatch.call_args.args[0]
+        assert event.type == EventType.CHANNEL_MSG_RECV
+        await bridge.on_event(event)
+        reception = bridge.store.history('channel', '0')[0]['reception']
+        assert reception == {'routing': 'flood', 'hops': 2, 'path': ['ab0012', 'cd0034']}
+    asyncio.run(scenario())
+
+
+def channel_radio(bridge):
+    slots = {
+        0: {'channel_name': 'Public', 'channel_secret': b'p' * 16},
+        1: {'channel_name': '', 'channel_secret': bytes(16)},
+    }
+    bridge.device = {'max_channels': 2}
+    async def get_channel(index):
+        return Event(EventType.CHANNEL_INFO, dict(slots[index], channel_idx=index))
+    async def set_channel(index, name, secret):
+        slots[index] = {'channel_name': name, 'channel_secret': secret}
+        return Event(EventType.OK, {})
+    bridge.radio.commands.get_channel = AsyncMock(side_effect=get_channel)
+    bridge.radio.commands.set_channel = AsyncMock(side_effect=set_channel)
+    bridge.radio.commands.get_msg = AsyncMock(return_value=Event(EventType.NO_MORE_MSGS, {}))
+    return slots
+
+
+def test_hashtag_add_remove_and_slot_reuse(bridge):
+    import hashlib
+    async def scenario():
+        slots = channel_radio(bridge)
+        await bridge.change_channel(ChannelInput(name='küste'))
+        assert slots[1] == {'channel_name': '#küste', 'channel_secret': hashlib.sha256('#küste'.encode()).digest()[:16]}
+        assert slots[0]['channel_name'] == 'Public'
+        bridge.store.save('channel', '1', 'in', 'Alter Verlauf', 123, 'received')
+        bridge.channel_scopes['1'] = '#region'
+        await bridge.change_channel(ChannelRemoveInput(index=1, name='#küste'), remove=True)
+        assert slots[1] == {'channel_name': '', 'channel_secret': bytes(16)}
+        assert '1' not in bridge.channel_scopes
+        assert bridge.store.history('channel', '1') == []
+        assert bridge.store.db.execute("SELECT count(*) FROM messages WHERE target LIKE 'archived:1:%'").fetchone()[0] == 1
+        await bridge.change_channel(ChannelInput(name='#neu'))
+        assert slots[1]['channel_name'] == '#neu'
+        assert bridge.store.history('channel', '1') == []
+    asyncio.run(scenario())
+
+
+def test_channels_duplicate_full_and_stale_delete(bridge):
+    async def scenario():
+        channel_radio(bridge)
+        await bridge.change_channel(ChannelInput(name='#test'))
+        for setting, remove in [(ChannelInput(name='#test'), False), (ChannelInput(name='#other'), False),
+                                (ChannelRemoveInput(index=1, name='#stale'), True)]:
+            with pytest.raises(HTTPException) as exc:
+                await bridge.change_channel(setting, remove)
+            assert exc.value.status_code == 409
+        assert bridge.radio.commands.set_channel.await_count == 1
+    asyncio.run(scenario())
+
+
+def test_channel_readback_mismatch_blocks_sends(bridge):
+    channel_radio(bridge)
+    bridge.radio.commands.set_channel.side_effect = None
+    bridge.radio.commands.set_channel.return_value = Event(EventType.OK, {})
+    with pytest.raises(RuntimeError):
+        asyncio.run(bridge.change_channel(ChannelInput(name='#test')))
+    assert not bridge.ready
+    assert bridge.channels == [{'index': 0, 'name': 'Public'}]
+
+
+@pytest.mark.parametrize('name', ['', '#', 'a b', 'a\x00b', 'a#b', 'ä' * 16])
+def test_invalid_hashtag_name(name):
+    with pytest.raises(HTTPException):
+        normalize_channel(name)

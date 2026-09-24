@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
+import uuid
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
@@ -33,6 +34,24 @@ def public(value):
     return str(value)
 
 
+def receive_path(payload):
+    """Preserve only receive metadata; contact out_path is never an RX route."""
+    count = payload.get("path_len")
+    if count == 255:
+        # Direct routing does not mean a zero-hop radio link.
+        return {"routing": "direct", "hops": None, "path": None}
+    if not isinstance(count, int) or not 0 <= count <= 63:
+        return {"routing": "unknown", "hops": None, "path": None}
+    result = {"routing": "flood", "hops": count, "path": [] if count == 0 else None}
+    raw = payload.get("path")
+    mode = payload.get("path_hash_mode")
+    if isinstance(raw, str) and isinstance(mode, int) and 0 <= mode <= 2:
+        width = (mode + 1) * 2
+        if len(raw) == count * width and all(c in "0123456789abcdefABCDEF" for c in raw):
+            result["path"] = [raw[i:i + width].lower() for i in range(0, len(raw), width)]
+    return result
+
+
 class Store:
     def __init__(self, path):
         if path != ":memory:":
@@ -48,27 +67,42 @@ class Store:
             CREATE INDEX IF NOT EXISTS conversation ON messages(kind, target, id);
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
         """)
+        # Additive migration: existing chat history stays intact.
+        if "reception" not in {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}:
+            with self.db:
+                self.db.execute("ALTER TABLE messages ADD COLUMN reception TEXT")
 
-    def save(self, kind, target, direction, text, timestamp, status, ack=None):
+    def save(self, kind, target, direction, text, timestamp, status, ack=None, reception=None):
         fingerprint = None
         if direction == "in":
             fingerprint = hashlib.sha256(json.dumps(
                 [kind, target, text, timestamp], ensure_ascii=False).encode()).hexdigest()
         with self.db:
             cursor = self.db.execute(
-                "INSERT OR IGNORE INTO messages(kind,target,direction,text,timestamp,status,ack,fingerprint) VALUES(?,?,?,?,?,?,?,?)",
-                (kind, target, direction, text, timestamp, status, ack, fingerprint))
+                "INSERT OR IGNORE INTO messages(kind,target,direction,text,timestamp,status,ack,fingerprint,reception) VALUES(?,?,?,?,?,?,?,?,?)",
+                (kind, target, direction, text, timestamp, status, ack, fingerprint,
+                 json.dumps(reception) if reception is not None else None))
         return cursor.lastrowid if cursor.rowcount else None
 
     def history(self, kind, target, before=None):
         rows = self.db.execute(
             "SELECT * FROM messages WHERE kind=? AND target=? AND id<? ORDER BY id DESC LIMIT 100",
             (kind, target, before or 9223372036854775807)).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        result = [dict(row) for row in reversed(rows)]
+        for message in result:
+            message["reception"] = json.loads(message["reception"]) if message["reception"] else None
+        return result
 
     def acknowledge(self, code):
         with self.db:
             self.db.execute("UPDATE messages SET status='delivered' WHERE ack=? AND direction='out'", (code,))
+
+    def archive_channel(self, index):
+        # Slot numbers are reused by the radio; old messages must not become
+        # the history of an unrelated channel occupying the same slot.
+        with self.db:
+            self.db.execute("UPDATE messages SET target=?, fingerprint=NULL WHERE kind='channel' AND target=?",
+                            (f"archived:{index}:{uuid.uuid4().hex}", str(index)))
 
     def set_meta(self, key, value):
         with self.db:
@@ -137,7 +171,8 @@ class Bridge:
             target = str(p["channel_idx"]) if kind == "channel" else p["pubkey_prefix"]
             # DMs use the protocol's 6-byte prefix, including for unknown senders.
             mid = self.store.save(kind, target, "in", p.get("text", ""),
-                                  p.get("sender_timestamp", time.time()), "received")
+                                  p.get("sender_timestamp", time.time()), "received",
+                                  reception=receive_path(p))
             if kind == "dm" and not any(k.startswith(target) for k in self.contacts):
                 self.contacts[target] = {"public_key": target, "adv_name": target, "type": 1, "unknown": True}
                 self.store.set_meta("contacts", self.contacts)
@@ -169,19 +204,80 @@ class Bridge:
         result = await self.command("get_contacts")
         self.contacts = public(result.payload)
         self.store.set_meta("contacts", self.contacts)
-        channels = []
-        for index in range(min(int(self.device.get("max_channels", 8)), 256)):
-            result = await self.command("get_channel", index)
-            p = result.payload
-            if p.get("channel_name") or any(p.get("channel_secret", b"")):
-                channels.append({"index": index, "name": p.get("channel_name") or ("Public" if index == 0 else f"Channel {index}")})
-        self.channels = channels
-        self.store.set_meta("channels", channels)
+        await self.read_channels()
         try:
             await self.read_default_scope()
         except (RuntimeError, TimeoutError):
             self.default_scope, self.scope_supported = None, False
         self.changed()
+
+    async def read_channels(self):
+        channels = []
+        slots = {}
+        for index in range(min(int(self.device.get("max_channels", 8)), 256)):
+            result = await self.command("get_channel", index)
+            p = result.payload
+            slots[index] = p
+            if p.get("channel_name") or any(p.get("channel_secret", b"")):
+                channels.append({"index": index, "name": p.get("channel_name") or ("Public" if index == 0 else f"Channel {index}")})
+        current_names = {c["index"]: c["name"] for c in channels}
+        for previous in self.channels:
+            if current_names.get(previous["index"]) != previous["name"]:
+                self.store.archive_channel(previous["index"])
+                self.channel_scopes.pop(str(previous["index"]), None)
+        self.store.set_meta("channel_scopes", self.channel_scopes)
+        self.channels = channels
+        self.store.set_meta("channels", channels)
+        self.changed()
+        return slots
+
+    async def change_channel(self, setting, remove=False):
+        name = normalize_channel(setting.name)
+        async with self.lock:
+            self.require_ready()
+            slots = await self.read_channels()
+            if remove:
+                index = setting.index
+                if index not in slots or slots[index].get("channel_name") != name:
+                    raise HTTPException(409, "Channel wurde inzwischen geändert. Bitte aktualisieren.")
+                expected_name, expected_secret = "", bytes(16)
+            else:
+                if any(p.get("channel_name") == name for p in slots.values()):
+                    raise HTTPException(409, "Dieser Channel ist bereits im Companion gespeichert.")
+                index = next((i for i, p in slots.items() if not p.get("channel_name") and p.get("channel_secret") == bytes(16)), None)
+                if index is None:
+                    raise HTTPException(409, "Im Companion ist kein freier Channel-Platz vorhanden.")
+                expected_name = name
+                expected_secret = hashlib.sha256(name.encode("utf-8")).digest()[:16]
+            # Empty the device inbox before reusing slots, so buffered messages
+            # cannot be assigned to a subsequently created channel.
+            for _ in range(1000):
+                if (await self.command("get_msg")).type == EventType.NO_MORE_MSGS:
+                    break
+            else:
+                raise HTTPException(409, "Nachrichtenpuffer noch nicht leer. Bitte erneut versuchen.")
+            try:
+                await self.command("set_channel", index, expected_name, expected_secret)
+                result = await self.command("get_channel", index)
+                if result.payload.get("channel_name") != expected_name or result.payload.get("channel_secret") != expected_secret:
+                    raise RuntimeError("Der Companion hat die Channel-Änderung nicht bestätigt.")
+            except (RuntimeError, TimeoutError, ConnectionError):
+                # A timed-out write may have reached the radio. Block sends
+                # until the authoritative configuration is read again.
+                self.ready, self.status = False, "reconnecting"
+                self.changed()
+                raise
+            self.store.archive_channel(index)
+            self.channel_scopes.pop(str(index), None)
+            self.store.set_meta("channel_scopes", self.channel_scopes)
+            self.channels = [c for c in self.channels if c["index"] != index]
+            if not remove:
+                self.channels.append({"index": index, "name": name})
+                self.channels.sort(key=lambda c: c["index"])
+            self.store.set_meta("channels", self.channels)
+            self.log("CHANNEL_REMOVED" if remove else "CHANNEL_ADDED", {"index": index, "name": name})
+            self.changed()
+            return self.snapshot()
 
     async def read_default_scope(self):
         result = await self.command("get_default_flood_scope")
@@ -234,6 +330,7 @@ class Bridge:
                 self.status, self.error = "connecting", None
                 self.changed()
                 self.radio = MeshCore(TCPConnection(self.host, self.port), default_timeout=5)
+                self.radio.set_decrypt_channel_logs(True)
                 for kind in EventType:
                     self.radio.subscribe(kind, self.on_event)
                 async with self.lock:
@@ -353,6 +450,25 @@ class ScopeInput(BaseModel):
     scope: str = Field(max_length=100)
 
 
+def normalize_channel(value):
+    value = value.strip()
+    if not value.startswith("#"):
+        value = "#" + value
+    if len(value) < 2 or any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c == "#" for c in value[1:]):
+        raise HTTPException(422, "Bitte einen Hashtag-Namen ohne Leerzeichen oder weitere # eingeben.")
+    if len(value.encode("utf-8")) > 31:
+        raise HTTPException(422, "Der Channel-Name darf mit # höchstens 31 UTF-8-Bytes enthalten.")
+    return value
+
+
+class ChannelInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class ChannelRemoveInput(ChannelInput):
+    index: int = Field(ge=0, le=255)
+
+
 def create_app(db_path=None, autoconnect=None):
     @asynccontextmanager
     async def lifespan(app):
@@ -413,6 +529,20 @@ def create_app(db_path=None, autoconnect=None):
             return await request.app.state.bridge.save_scope(setting)
         except (RuntimeError, TimeoutError, ConnectionError) as exc:
             raise HTTPException(502, f"Scope konnte nicht bestätigt werden: {str(exc) or 'Timeout'}. Bitte aktualisieren.") from exc
+
+    async def channel_change(request, setting, remove):
+        try:
+            return await request.app.state.bridge.change_channel(setting, remove)
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, f"Channel-Änderung unbestätigt: {str(exc) or 'Timeout'}. Nach Neuverbindung prüfen.") from exc
+
+    @app.post("/api/channels")
+    async def add_channel(request: Request, setting: ChannelInput):
+        return await channel_change(request, setting, False)
+
+    @app.post("/api/channels/remove")
+    async def remove_channel(request: Request, setting: ChannelRemoveInput):
+        return await channel_change(request, setting, True)
 
     @app.post("/api/messages")
     async def send(request: Request, message: MessageInput):

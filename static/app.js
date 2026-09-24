@@ -3,6 +3,7 @@ const state = { status: 'offline', channels: [], contacts: {}, events: [], stats
 let selection = null, paused = false, sending = false, backendOnline = false, historyVersion = 0;
 let messageRows = [], olderAvailable = false, connectionError = false;
 let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
+let channelSaving = false;
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
@@ -17,6 +18,18 @@ async function api(path, body) {
   return result;
 }
 function contactName(key) { const found=Object.entries(state.contacts).find(([k])=>k.startsWith(key)); return found?.[1]?.adv_name || key; }
+function receptionLabel(reception) {
+  if(!reception || reception.routing==='unknown') return 'Empfangspfad: nicht verfügbar';
+  if(reception.routing==='direct') return 'Empfangspfad: Direct-Routing · Knotenfolge nicht übermittelt';
+  if(reception.hops===0) return 'Empfangspfad: direkt empfangen · 0 Hops';
+  const count=`${reception.hops} ${reception.hops===1?'Hop':'Hops'}`;
+  if(!reception.path?.length) return `Empfangspfad: ${count} · Knotenfolge nicht verfügbar`;
+  const hops=reception.path.map(hash=>{
+    const matches=Object.entries(state.contacts).filter(([key])=>key.toLowerCase().startsWith(hash));
+    return matches.length===1 && matches[0][1].adv_name ? `${matches[0][1].adv_name} (${hash})` : hash;
+  });
+  return `Empfangspfad · ${count}: Sender → ${hops.join(' → ')} → Du`;
+}
 function keyFor(s) {return s ? `${s.kind}:${s.target}` : '';}
 function renderNav() {
   $('channel-count').textContent=state.channels.length;
@@ -43,6 +56,10 @@ function renderNav() {
 }
 function applyState(data) {
   Object.assign(state,data); backendOnline=true;
+  if(selection?.kind==='channel'&&!state.channels.some(c=>String(c.index)===selection.target&&c.name===selection.name)) {
+    drafts.delete(keyFor(selection));selection=null;historyVersion++;messageRows=[];
+    $('chat').hidden=true;$('monitor').hidden=false;$('breadcrumb-title').textContent='Netzmonitor';
+  }
   $('endpoint').textContent=`${state.host}:${state.port}`;
   $('device-name').textContent=state.info.name||'Dein Companion';
   $('metric-endpoint').textContent=`TCP · ${state.host}:${state.port}`;
@@ -55,6 +72,7 @@ function applyState(data) {
   $('radio-info').replaceChildren(...info.map(([key,value])=>{const row=node('div');row.append(node('dt','',key),node('dd','',value));return row;}));
   updateConnection(); renderNav(); renderChart(); if(!paused) renderEvents();
   renderScopes();
+  renderChannelManager();
   if(state.error) {connectionError=true;error(`Verbindung: ${state.error} · Erneuter Versuch erfolgt automatisch.`);}
   else if(connectionError) {connectionError=false;error(null);}
 }
@@ -68,7 +86,36 @@ function updateConnection() {
   $('refresh').disabled=!connected;
   updateComposer();
   renderScopes();
+  renderChannelManager();
 }
+function renderChannelManager() {
+  const online=backendOnline&&state.status==='connected';
+  $('channel-capacity').textContent=`${state.channels.length} / ${state.device.max_channels??'—'} Plätze belegt`;
+  $('new-channel-name').disabled=!online||channelSaving;
+  $('add-channel').disabled=!online||channelSaving;
+  $('managed-channels').replaceChildren(...state.channels.filter(c=>c.name.startsWith('#')).map(c=>{
+    const row=node('div','managed-channel');
+    const remove=node('button','button compact','Vom Companion entfernen');
+    remove.type='button';remove.disabled=!online||channelSaving;
+    remove.setAttribute('aria-label',`${c.name} vom Companion entfernen`);
+    remove.onclick=()=>changeChannel('/api/channels/remove',{index:c.index,name:c.name});
+    row.append(node('span','',c.name),remove);return row;
+  }));
+}
+async function changeChannel(path, body) {
+  channelSaving=true;renderChannelManager();updateComposer();$('channel-feedback').textContent='Companion wird aktualisiert …';
+  try{
+    applyState(await api(path,body));
+    if(path==='/api/channels')$('new-channel-name').value='';
+    $('channel-feedback').textContent=path==='/api/channels'?'Channel im Companion gespeichert.':'Channel vom Companion entfernt. Der bisherige Verlauf bleibt lokal archiviert.';
+  }catch(e){$('channel-feedback').textContent=e.message;}
+  finally{channelSaving=false;renderChannelManager();updateComposer();}
+}
+$('manage-channels').onclick=()=>{
+  $('monitor-nav').click();$('channel-manager').hidden=false;$('channel-manager').scrollIntoView({behavior:'smooth',block:'start'});
+  $('new-channel-name').focus({preventScroll:true});
+};
+$('add-channel-form').onsubmit=e=>{e.preventDefault();if(!channelSaving)changeChannel('/api/channels',{name:$('new-channel-name').value});};
 function scopeLabel(scope) {return scope === '*' ? 'Ohne Scope' : scope || 'Companion-Standard';}
 function renderScopes() {
   const scopes=state.scopes||{}, online=backendOnline&&state.status==='connected';
@@ -156,7 +203,9 @@ async function loadMessages(before=null) {
       const wrap=node('article',`message ${message.direction}`);
       const labels={received:'Empfangen',sent:selection.kind==='dm'?'An Companion übergeben · unbestätigt':'An Companion übergeben',delivered:'Zugestellt ✓'};
       const sender=message.direction==='out'?'Du':selection.kind==='dm'?contactName(message.target):selection.name;
-      wrap.append(node('div','bubble',message.text),node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`));fragment.append(wrap);
+      wrap.append(node('div','bubble',message.text));
+      if(message.direction==='in') wrap.append(node('div','message-path',receptionLabel(message.reception)));
+      wrap.append(node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`));fragment.append(wrap);
     }
     list.append(fragment);
     if(before) list.scrollTop=oldTop+list.scrollHeight-oldHeight;
@@ -167,7 +216,7 @@ function updateComposer() {
   const length=encoder.encode($('message-text').value.trim()).length;
   $('message-counter').textContent=`${length} / 160 Bytes`;
   $('message-counter').classList.toggle('danger',length>160);
-  $('send').disabled=sending||scopeSaving||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>160;
+  $('send').disabled=sending||scopeSaving||channelSaving||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>160;
   $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
 }
 $('monitor-nav').onclick=()=>{rememberDraft();selection=null;historyVersion++;$('monitor').hidden=false;$('chat').hidden=true;$('breadcrumb-title').textContent='Netzmonitor';renderNav();};

@@ -12,6 +12,7 @@
     <button class="nav-item" id="monitor-nav"><span>◉</span> Netzmonitor <span class="live-dot"></span></button>
     <div class="section-label">CHANNELS <span id="channel-count">0</span></div>
     <div id="channels" class="nav-list"><p class="nav-empty">Noch keine Channels geladen.</p></div>
+    <button id="manage-channels" class="button compact manage-channels">＋ Channels verwalten</button>
     <div class="section-label">DIREKTNACHRICHTEN <span id="contact-count">0</span></div>
     <label class="search"><span>⌕</span><input id="contact-search" placeholder="Kontakte suchen …" aria-label="Kontakte suchen"></label>
     <div id="contacts" class="nav-list contacts"></div>
@@ -22,6 +23,7 @@
     <div id="error" class="error" role="alert" hidden></div>
     <section id="monitor" class="monitor">
       <div class="page-heading"><div><div class="eyebrow">DEIN MESH. IM BLICK.</div><h1>Netzmonitor<span class="accent">.</span></h1><p>Funkaktivität und Verbindungen direkt von deinem Companion.</p></div><button id="refresh" class="button">↻ &nbsp; Aktualisieren</button></div>
+      <article id="channel-manager" class="panel channel-manager" hidden><div class="panel-heading"><h2>Hashtag-Channels</h2><span id="channel-capacity" class="pill"></span></div><form id="add-channel-form" class="scope-form"><label for="new-channel-name">Channel-Name</label><div class="scope-fields"><input id="new-channel-name" placeholder="#mein-channel" required maxlength="100" autocomplete="off"><button id="add-channel" type="submit" class="button">Im Companion hinzufügen</button></div><p>Hashtag-Channels werden mit dem aus ihrem Namen abgeleiteten Schlüssel auf dem Companion gespeichert. Groß- und Kleinschreibung bleibt erhalten.</p></form><div id="managed-channels" class="managed-channels"></div><p id="channel-feedback" class="channel-feedback" role="status"></p></article>
       <div class="metrics">
         <article class="metric"><span class="metric-label">VERBINDUNG <span>↗</span></span><strong id="metric-status">Offline</strong><small id="metric-endpoint">TCP · 192.168.88.14:5000</small></article>
         <article class="metric"><span class="metric-label">KONTAKTE <span>♧</span></span><strong id="metric-contacts">—</strong><small>Im Companion gespeichert</small></article>

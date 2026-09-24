@@ -60,6 +60,14 @@ with sync_playwright() as p:
             else:
                 state['scopes']['channels'][data['channel']]=data['scope']
             route.fulfill(json=state)
+        elif path == 'channels':
+            data=request.post_data_json
+            state['channels'].append({'index':1,'name':'#'+data['name'].lstrip('#')})
+            route.fulfill(json=state)
+        elif path == 'channels/remove':
+            data=request.post_data_json
+            state['channels']=[c for c in state['channels'] if c['index']!=data['index']]
+            route.fulfill(json=state)
         elif path.startswith('messages') and request.method == 'GET':
             route.fulfill(json=messages)
         elif path == 'messages' and request.method == 'POST':
@@ -82,6 +90,14 @@ with sync_playwright() as p:
       addEventListener(name, cb) { this.listeners[name] = cb; }
     };""")
     page.goto(url)
+    page.locator('#manage-channels').click()
+    page.locator('#new-channel-name').fill('browsertest')
+    page.locator('#add-channel').click()
+    expect(page.locator('#channel-feedback')).to_have_text('Channel im Companion gespeichert.')
+    expect(page.locator('#channels button')).to_have_count(2)
+    page.get_by_role('button', name='#browsertest vom Companion entfernen').click()
+    expect(page.locator('#channel-feedback')).to_contain_text('Channel vom Companion entfernt.')
+    expect(page.locator('#channels button')).to_have_count(1)
     expect(page.locator('#default-scope-input')).to_have_value('#test')
     page.locator('#default-scope-input').fill('#region')
     page.locator('#default-scope-save').click()
@@ -119,6 +135,24 @@ with sync_playwright() as p:
     expect(page.locator('#error')).to_have_text('Simulierter Funkfehler')
     expect(page.locator('#message-text')).to_have_value('Entwurf bleibt bei Fehler')
     assert len(sent) == 2
+    messages[:] = [
+        {'id':10,'direction':'in','text':'Mit Empfangspfad','timestamp':time.time(),'status':'received','target':key,
+         'reception':{'routing':'flood','hops':2,'path':['ab0012','cd0034']}},
+        {'id':11,'direction':'in','text':'Geroutete DM','timestamp':time.time(),'status':'received','target':key,
+         'reception':{'routing':'direct','hops':None,'path':None}},
+        {'id':12,'direction':'in','text':'Direkter Empfang','timestamp':time.time(),'status':'received','target':key,
+         'reception':{'routing':'flood','hops':0,'path':[]}},
+        {'id':13,'direction':'in','text':'Alter Verlauf','timestamp':time.time(),'status':'received','target':key,'reception':None},
+    ]
+    page.locator('#monitor-nav').click()
+    page.locator('#contacts button').click()
+    expect(page.locator('.message-path').nth(0)).to_have_text('Empfangspfad · 2 Hops: Sender → ab0012 → cd0034 → Du')
+    expect(page.locator('.message-path').nth(1)).to_contain_text('Direct-Routing · Knotenfolge nicht übermittelt')
+    expect(page.locator('.message-path').nth(2)).to_contain_text('direkt empfangen · 0 Hops')
+    expect(page.locator('.message-path').nth(3)).to_have_text('Empfangspfad: nicht verfügbar')
+    page.set_viewport_size({'width':390,'height':844})
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Chat path mobile overflow'
+    page.screenshot(path=str(output / 'chat-path-mobile.png'), full_page=True)
     assert not errors, errors
     browser.close()
     print('Browser OK: live connection, desktop/mobile, drafts, UTF-8 limit, mocked channel/DM sends, XSS and error recovery.')
