@@ -43,7 +43,8 @@ with sync_playwright() as p:
     state = {'host':'192.168.88.14','port':5000,'status':'connected','error':None,
              'channels':[{'index':0,'name':'Public'}],
              'contacts':{key:{'type':1,'adv_name':'Testkontakt','public_key':key}},
-             'info':{'name':'Simulierter Companion'},'device':{},'stats':{},'events':[]}
+             'info':{'name':'Simulierter Companion'},'device':{'fw ver':13},'stats':{},'events':[],
+             'scopes':{'default':'#test','supported':True,'channels':{}}}
     messages = []
     sent = []
     fail = [False]
@@ -52,6 +53,13 @@ with sync_playwright() as p:
         path = request.url.split('/api/')[1]
         if path == 'events':
             route.fulfill(content_type='text/event-stream', body='event: state\ndata: '+json.dumps(state)+'\n\n')
+        elif path == 'scopes':
+            data=request.post_data_json
+            if data['channel'] is None:
+                state['scopes']['default']=data['scope']
+            else:
+                state['scopes']['channels'][data['channel']]=data['scope']
+            route.fulfill(json=state)
         elif path.startswith('messages') and request.method == 'GET':
             route.fulfill(json=messages)
         elif path == 'messages' and request.method == 'POST':
@@ -74,7 +82,24 @@ with sync_playwright() as p:
       addEventListener(name, cb) { this.listeners[name] = cb; }
     };""")
     page.goto(url)
+    expect(page.locator('#default-scope-input')).to_have_value('#test')
+    page.locator('#default-scope-input').fill('#region')
+    page.locator('#default-scope-save').click()
+    expect(page.locator('#default-scope-feedback')).to_have_text('Gespeichert.')
+    assert state['scopes']['default'] == '#region'
+    page.locator('#default-scope-clear').click()
+    expect(page.locator('#default-scope-current')).to_have_text('Ohne Scope')
     page.locator('#channels button').click()
+    page.locator('#channel-scope-mode').select_option('region')
+    page.locator('#channel-scope-input').fill('#local')
+    page.locator('#channel-scope-save').click()
+    expect(page.locator('#channel-scope-current')).to_have_text('Aktiv: #local')
+    page.locator('#monitor-nav').click()
+    page.locator('#channels button').click()
+    expect(page.locator('#channel-scope-input')).to_have_value('#local')
+    page.locator('#channel-scope-mode').select_option('unscoped')
+    page.locator('#channel-scope-save').click()
+    expect(page.locator('#channel-scope-current')).to_have_text('Aktiv: Ohne Scope')
     page.locator('#message-text').fill('<img src=x onerror=alert(1)> Moin')
     page.locator('#send').click()
     expect(page.locator('.bubble')).to_have_text('<img src=x onerror=alert(1)> Moin')

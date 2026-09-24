@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 const state = { status: 'offline', channels: [], contacts: {}, events: [], stats: {}, info: {}, device: {} };
 let selection = null, paused = false, sending = false, backendOnline = false, historyVersion = 0;
 let messageRows = [], olderAvailable = false, connectionError = false;
+let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
@@ -53,6 +54,7 @@ function applyState(data) {
   const info=[['Adresse',`${state.host}:${state.port}`],['Gerät',state.info.name||state.device.model||'—'],['Firmware',state.device.ver||'—'],['Frequenz',state.info.radio_freq ? `${state.info.radio_freq} MHz`:'—'],['Rauschpegel',state.stats.STATS_RADIO?.noise_floor!==undefined?`${state.stats.STATS_RADIO.noise_floor} dBm`:'—']];
   $('radio-info').replaceChildren(...info.map(([key,value])=>{const row=node('div');row.append(node('dt','',key),node('dd','',value));return row;}));
   updateConnection(); renderNav(); renderChart(); if(!paused) renderEvents();
+  renderScopes();
   if(state.error) {connectionError=true;error(`Verbindung: ${state.error} · Erneuter Versuch erfolgt automatisch.`);}
   else if(connectionError) {connectionError=false;error(null);}
 }
@@ -65,7 +67,44 @@ function updateConnection() {
   $('connect').textContent=connected?'Verbunden':state.status==='offline'?'Verbinden':'Verbinde …';
   $('refresh').disabled=!connected;
   updateComposer();
+  renderScopes();
 }
+function scopeLabel(scope) {return scope === '*' ? 'Ohne Scope' : scope || 'Companion-Standard';}
+function renderScopes() {
+  const scopes=state.scopes||{}, online=backendOnline&&state.status==='connected';
+  $('default-scope-current').textContent=scopes.supported?(scopes.default||'Ohne Scope'):'Nicht verfügbar';
+  if(!defaultScopeDirty) $('default-scope-input').value=scopes.default||'';
+  for(const id of ['default-scope-input','default-scope-save','default-scope-clear']) $(id).disabled=!online||!scopes.supported||scopeSaving;
+  const channel=selection?.kind==='channel';
+  $('channel-scope-form').hidden=!channel;
+  if(channel){
+    const scope=scopes.channels?.[selection.target]||'';
+    $('channel-scope-current').textContent=`Aktiv: ${scopeLabel(scope)}`;
+    if(!channelScopeDirty){$('channel-scope-mode').value=scope==='*'?'unscoped':scope?'region':'default';$('channel-scope-input').value=scope==='*'?'':scope;}
+  }
+  $('channel-scope-input').hidden=$('channel-scope-mode').value!=='region';
+  $('channel-scope-input').required=$('channel-scope-mode').value==='region';
+  for(const id of ['channel-scope-mode','channel-scope-input','channel-scope-save']) $(id).disabled=!online||!channel||scopeSaving||(state.device['fw ver']||0)<8;
+  $('channel-scope-mode').querySelector('[value=unscoped]').disabled=(state.device['fw ver']||0)<12;
+  updateComposer();
+}
+async function saveScope(channel, scope) {
+  const feedback=channel===null?'default-scope-feedback':'channel-scope-feedback';
+  scopeSaving=true;$(feedback).textContent='Wird gespeichert …';renderScopes();
+  try{
+    const result=await api('/api/scopes',{channel,scope});
+    if(channel===null)defaultScopeDirty=false;
+    else if(selection?.target===channel)channelScopeDirty=false;
+    applyState(result);$(feedback).textContent='Gespeichert.';
+  }catch(e){$(feedback).textContent=e.message;}
+  finally{scopeSaving=false;renderScopes();}
+}
+$('default-scope-input').oninput=()=>{defaultScopeDirty=true;$('default-scope-feedback').textContent='';};
+$('default-scope-form').onsubmit=e=>{e.preventDefault();saveScope(null,$('default-scope-input').value);};
+$('default-scope-clear').onclick=()=>saveScope(null,'');
+$('channel-scope-mode').onchange=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';renderScopes();};
+$('channel-scope-input').oninput=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';};
+$('channel-scope-form').onsubmit=e=>{e.preventDefault();if(selection?.kind!=='channel')return;const mode=$('channel-scope-mode').value;saveScope(selection.target,mode==='unscoped'?'*':mode==='region'?$('channel-scope-input').value:'');};
 function renderEvents() {
   const filter=$('event-filter').value;
   const events=state.events.filter(e=>filter==='all'||(filter==='radio'?radioTypes.includes(e.type):['CHANNEL_MSG_RECV','CONTACT_MSG_RECV','MESSAGE_SENT','ACK'].includes(e.type)));
@@ -86,7 +125,8 @@ function renderChart() {
 }
 function rememberDraft() {if(selection) drafts.set(keyFor(selection),$('message-text').value);}
 async function openChat(s) {
-  rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;
+  rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;channelScopeDirty=false;
+  $('channel-scope-feedback').textContent='';renderScopes();
   $('monitor').hidden=true;$('chat').hidden=false;
   $('breadcrumb-title').textContent=s.kind==='channel'?`# ${s.name.replace(/^#/,'')}`:s.name;
   $('chat-title').textContent=s.name;
@@ -127,7 +167,7 @@ function updateComposer() {
   const length=encoder.encode($('message-text').value.trim()).length;
   $('message-counter').textContent=`${length} / 160 Bytes`;
   $('message-counter').classList.toggle('danger',length>160);
-  $('send').disabled=sending||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>160;
+  $('send').disabled=sending||scopeSaving||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>160;
   $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
 }
 $('monitor-nav').onclick=()=>{rememberDraft();selection=null;historyVersion++;$('monitor').hidden=false;$('chat').hidden=true;$('breadcrumb-title').textContent='Netzmonitor';renderNav();};

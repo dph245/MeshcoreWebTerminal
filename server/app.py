@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from meshcore import EventType, MeshCore
 from meshcore.tcp_cx import TCPConnection
+from meshcore.packets import CommandType
 from pydantic import BaseModel, Field
 
 
@@ -92,6 +93,9 @@ class Bridge:
         self.info = {}
         self.device = {}
         self.stats = {}
+        self.default_scope = None
+        self.scope_supported = False
+        self.channel_scopes = store.get_meta("channel_scopes", {})
         self.events = deque(maxlen=300)
         self.acks = deque(maxlen=200)
         self.listeners = set()
@@ -100,7 +104,9 @@ class Bridge:
     def snapshot(self):
         return public(dict(status=self.status, error=self.error, host=self.host, port=self.port,
                            channels=self.channels, contacts=self.contacts, info=self.info,
-                           device=self.device, stats=self.stats, events=list(self.events)))
+                           device=self.device, stats=self.stats, events=list(self.events),
+                           scopes={"default": self.default_scope, "supported": self.scope_supported,
+                                   "channels": self.channel_scopes}))
 
     def emit(self, event, payload):
         for queue in tuple(self.listeners):
@@ -171,7 +177,53 @@ class Bridge:
                 channels.append({"index": index, "name": p.get("channel_name") or ("Public" if index == 0 else f"Channel {index}")})
         self.channels = channels
         self.store.set_meta("channels", channels)
+        try:
+            await self.read_default_scope()
+        except (RuntimeError, TimeoutError):
+            self.default_scope, self.scope_supported = None, False
         self.changed()
+
+    async def read_default_scope(self):
+        result = await self.command("get_default_flood_scope")
+        self.default_scope = result.payload.get("scope_name", "")
+        self.scope_supported = True
+
+    async def save_scope(self, setting):
+        scope = normalize_scope(setting.scope)
+        async with self.lock:
+            self.require_ready()
+            if setting.channel is not None:
+                if setting.channel not in {str(c["index"]) for c in self.channels}:
+                    raise HTTPException(404, "Channel nicht gefunden.")
+                if int(self.device.get("fw ver", 0)) < 8:
+                    raise HTTPException(409, "Diese Firmware unterstützt keine Channel-Scopes.")
+                if scope == "*" and int(self.device.get("fw ver", 0)) < 12:
+                    raise HTTPException(409, "Diese Firmware unterstützt kein erzwungenes Senden ohne Scope.")
+                self.channel_scopes[setting.channel] = scope
+                self.store.set_meta("channel_scopes", self.channel_scopes)
+            else:
+                if not self.scope_supported:
+                    raise HTTPException(409, "Standard-Scope konnte von dieser Firmware nicht gelesen werden.")
+                # meshcore 2.3.14 pads by character count and cannot clear the default
+                # correctly. Encode the documented 31-byte name field ourselves.
+                name = "" if scope == "*" else scope
+                encoded = name.encode("utf-8")
+                frame = bytes([CommandType.SET_DEFAULT_FLOOD_SCOPE.value])
+                if encoded:
+                    frame += encoded.ljust(31, b"\0") + hashlib.sha256(encoded).digest()[:16]
+                await self.command("send", frame, [EventType.OK, EventType.ERROR])
+                try:
+                    await self.read_default_scope()
+                except (RuntimeError, TimeoutError):
+                    self.default_scope, self.scope_supported = None, False
+                    self.changed()
+                    raise
+                if self.default_scope != name:
+                    self.changed()
+                    raise RuntimeError("Der Companion hat einen anderen Standard-Scope zurückgemeldet.")
+            self.log("SCOPE_UPDATED", {"channel": setting.channel, "scope": scope})
+            self.changed()
+            return self.snapshot()
 
     async def run(self):
         while True:
@@ -189,12 +241,14 @@ class Bridge:
                     if result is None or result.type == EventType.ERROR:
                         raise ConnectionError("Companion antwortet nicht auf den MeshCore-Handshake.")
                     await self.command("send_device_query")
+                    if int(self.device.get("fw ver", 0)) >= 8:
+                        await self.command("set_flood_scope", "")
                     await self.refresh_locked()
                     self.ready, self.status = True, "connected"
                     self.log("CONNECTED", {"address": f"{self.host}:{self.port}"})
                     self.changed()
                 next_stats = 0
-                while self.desired and self.radio.is_connected:
+                while self.desired and self.ready and self.radio.is_connected:
                     async with self.lock:
                         # Polling also drains messages queued before the TCP connection.
                         for _ in range(100):
@@ -241,7 +295,26 @@ class Bridge:
             if kind == "channel":
                 if target not in {str(c["index"]) for c in self.channels}:
                     raise HTTPException(404, "Channel nicht gefunden.")
-                result = await self.command("send_chan_msg", int(target), text, timestamp)
+                scope = self.channel_scopes.get(target, "")
+                supports_scope = int(self.device.get("fw ver", 0)) >= 8
+                if scope and not supports_scope:
+                    raise HTTPException(409, "Die Firmware unterstützt den gespeicherten Scope nicht.")
+                if scope == "*" and int(self.device.get("fw ver", 0)) < 12:
+                    raise HTTPException(409, "Die Firmware unterstützt kein Senden ohne Scope.")
+                try:
+                    if supports_scope:
+                        await self.command("set_flood_scope", scope)
+                    result = await self.command("send_chan_msg", int(target), text, timestamp)
+                finally:
+                    if supports_scope:
+                        try:
+                            await self.command("set_flood_scope", "")
+                        except (RuntimeError, TimeoutError, ConnectionError):
+                            # Block subsequent sends until a fresh session is ready.
+                            self.ready = False
+                            self.status = "reconnecting"
+                            self.log("SCOPE_RESET_ERROR", {"message": "Scope-Rücksetzung unbestätigt; Neuverbindung erforderlich."})
+                            self.changed()
             else:
                 contact = self.contacts.get(target)
                 if not contact or contact.get("unknown") or contact.get("type") != 1:
@@ -260,6 +333,24 @@ class MessageInput(BaseModel):
     kind: Literal["channel", "dm"]
     target: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=160)
+
+
+def normalize_scope(value):
+    value = value.strip()
+    if value in ("", "*"):
+        return value
+    if not value.startswith("#"):
+        value = "#" + value
+    if len(value) < 2 or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+        raise HTTPException(422, "Scope-Namen dürfen keine Leer- oder Steuerzeichen enthalten.")
+    if len(value.encode("utf-8")) > 30:
+        raise HTTPException(422, "Der Scope darf einschließlich # höchstens 30 UTF-8-Bytes lang sein.")
+    return value
+
+
+class ScopeInput(BaseModel):
+    channel: str | None = Field(default=None, max_length=3)
+    scope: str = Field(max_length=100)
 
 
 def create_app(db_path=None, autoconnect=None):
@@ -315,6 +406,13 @@ def create_app(db_path=None, autoconnect=None):
     @app.get("/api/messages")
     async def messages(request: Request, kind: Literal["channel", "dm"], target: str, before: int | None = None):
         return request.app.state.bridge.store.history(kind, target[:12] if kind == "dm" else target, before)
+
+    @app.post("/api/scopes")
+    async def scopes(request: Request, setting: ScopeInput):
+        try:
+            return await request.app.state.bridge.save_scope(setting)
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, f"Scope konnte nicht bestätigt werden: {str(exc) or 'Timeout'}. Bitte aktualisieren.") from exc
 
     @app.post("/api/messages")
     async def send(request: Request, message: MessageInput):

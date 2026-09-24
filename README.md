@@ -8,6 +8,7 @@ Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 - DM-Empfangsbestätigungen (ACK), Sendefehler und Verbindungsstatus
 - Netzmonitor mit Live-Funkereignissen, RSSI/SNR, Gerätestatistik und Ereignisfiltern
 - Automatische Neuverbindung; responsive deutsche Oberfläche
+- Standard-Scope im Companion und gespeicherte Scope-Auswahl pro Channel
 
 ## Start mit Docker
 
@@ -49,6 +50,12 @@ Nur einen Serverprozess verwenden: Er hält die gemeinsame Verbindung zum Compan
 Für Docker können Host und Port in einer `.env` gesetzt werden. Compose veröffentlicht den Webserver standardmäßig nur auf dem lokalen Rechner. Für Zugriff anderer Geräte im vertrauenswürdigen LAN die Portbindung bewusst auf `8090:8080` ändern. Die Anwendung hat keine Benutzeranmeldung; alle Browser teilen Nachrichten und Funkzugriff. Nicht ungeschützt ins Internet veröffentlichen.
 
 ## Verhalten und Grenzen
+
+Im Netzmonitor lässt sich der **Standard-Scope** des Companions lesen, ändern und mit „Ohne Scope“ löschen. Der Name wird mit `#` normalisiert und darf einschließlich `#` maximal 30 UTF-8-Bytes enthalten. Der Standard gilt für Flood-Verkehr, auch DMs ohne bekannte Route und Adverts; direkte Routen werden dadurch nicht verändert.
+
+In jedem Channel stehen **Companion-Standard**, **Ohne Scope** und **Eigene Region** zur Auswahl. Mit „Speichern“ wird die Auswahl lokal in SQLite hinterlegt und von allen Browsern geteilt. Beim Senden wird der Channel-Scope gesetzt und anschließend zurückgesetzt, damit er nicht auf andere Channels oder DMs übergreift. Wenn die Rücksetzung nicht bestätigt wird, blockiert die Anwendung weitere Sendungen bis zur Neuverbindung. Empfangene Nachrichten werden durch diese Auswahl nicht gefiltert. Die Bedienfelder hängen von den Firmware-Fähigkeiten ab; unbekannte Standard-Scope-Werte werden als nicht verfügbar angezeigt.
+
+Die Protokollrahmen folgen der [Companion-Firmware](https://github.com/meshcore-dev/MeshCore/blob/main/examples/companion_radio/MyMesh.cpp). Der Adapter behandelt UTF-8-Padding und das Löschen des Standard-Scopes selbst, da `meshcore` 2.3.14 diese Fälle nicht korrekt kodiert.
 
 - Channels und Kontakte werden aus der bestehenden Companion-Konfiguration gelesen. Channel-Anlage, Schlüsselverwaltung und Kontakt-Import sind noch nicht Bestandteil dieser Version.
 - Empfangen werden neue und noch im Companion gepufferte Nachrichten. Eine frühere Historie anderer Clients kann nicht nachträglich abgerufen werden.

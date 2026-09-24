@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from meshcore import EventType
 from meshcore.events import Event
 
-from server.app import Bridge, Store, create_app, public
+from server.app import Bridge, Store, ScopeInput, create_app, public, normalize_scope
 
 
 KEY = 'abcdef123456' + 'ab' * 26
@@ -23,6 +23,9 @@ def bridge():
     bridge.channels = [{'index': 0, 'name': 'Public'}]
     bridge.contacts = {KEY: {'public_key': KEY, 'adv_name': 'Test', 'type': 1}}
     bridge.radio = SimpleNamespace(is_connected=True, commands=SimpleNamespace(
+        get_default_flood_scope=AsyncMock(return_value=Event(EventType.DEFAULT_FLOOD_SCOPE, {})),
+        set_flood_scope=AsyncMock(return_value=Event(EventType.OK, {})),
+        send=AsyncMock(return_value=Event(EventType.OK, {})),
         send_chan_msg=AsyncMock(return_value=Event(EventType.OK, {})),
         send_msg=AsyncMock(return_value=Event(EventType.MSG_SENT, {'expected_ack': bytes.fromhex('1234abcd')})),
     ))
@@ -130,3 +133,74 @@ def test_api_offline_and_write_protection(tmp_path):
         assert client.post('/api/messages', headers=headers, json={'kind': 'channel', 'target': '0', 'text': 'Moin'}).status_code == 409
         assert client.post('/api/messages', headers=headers, json={'kind': 'bad', 'target': '0', 'text': 'Moin'}).status_code == 422
         assert client.options('/api/messages', headers={'Origin': 'https://example.com', 'Access-Control-Request-Headers': 'X-Meshcore-Client'}).headers.get('access-control-allow-origin') is None
+
+
+def test_default_scope_frame_unicode_and_clear(bridge):
+    import hashlib
+    async def scenario():
+        bridge.scope_supported = True
+        bridge.radio.commands.get_default_flood_scope.return_value = Event(EventType.DEFAULT_FLOOD_SCOPE, {'scope_name': '#küste'})
+        await bridge.save_scope(ScopeInput(scope='küste'))
+        frame = bridge.radio.commands.send.call_args.args[0]
+        name = '#küste'.encode()
+        assert frame == b'\x3f' + name.ljust(31, b'\0') + hashlib.sha256(name).digest()[:16]
+        assert bridge.snapshot()['scopes']['default'] == '#küste'
+        bridge.radio.commands.get_default_flood_scope.return_value = Event(EventType.DEFAULT_FLOOD_SCOPE, {})
+        await bridge.save_scope(ScopeInput(scope=''))
+        assert bridge.radio.commands.send.call_args.args[0] == b'\x3f'
+        assert bridge.default_scope == ''
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('scope', ['#', 'a b', 'a\x00b', 'ä' * 15, 'a' * 30])
+def test_invalid_scope_rejected(scope):
+    with pytest.raises(HTTPException):
+        normalize_scope(scope)
+
+
+def test_channel_scope_is_persisted_and_reset_after_send(bridge):
+    async def scenario():
+        bridge.device = {'fw ver': 13}
+        await bridge.save_scope(ScopeInput(channel='0', scope='bsmesh'))
+        assert bridge.store.get_meta('channel_scopes', {}) == {'0': '#bsmesh'}
+        bridge.radio.commands.set_flood_scope.assert_not_awaited()
+        calls = []
+        async def set_scope(scope):
+            calls.append(('scope', scope))
+            return Event(EventType.OK, {})
+        async def send(*args):
+            calls.append(('send', args[1]))
+            return Event(EventType.OK, {})
+        bridge.radio.commands.set_flood_scope.side_effect = set_scope
+        bridge.radio.commands.send_chan_msg.side_effect = send
+        await bridge.send('channel', '0', 'Moin')
+        assert calls == [('scope', '#bsmesh'), ('send', 'Moin'), ('scope', '')]
+    asyncio.run(scenario())
+
+
+def test_failed_scope_prevents_transmission(bridge):
+    bridge.device = {'fw ver': 13}
+    bridge.channel_scopes = {'0': '#test'}
+    bridge.radio.commands.set_flood_scope.side_effect = [Event(EventType.ERROR, {}), Event(EventType.OK, {})]
+    with pytest.raises(RuntimeError):
+        asyncio.run(bridge.send('channel', '0', 'Moin'))
+    bridge.radio.commands.send_chan_msg.assert_not_awaited()
+    assert bridge.radio.commands.set_flood_scope.call_args.args == ('',)
+
+
+def test_failed_scope_reset_blocks_followup_sends(bridge):
+    bridge.device = {'fw ver': 13}
+    bridge.radio.commands.set_flood_scope.side_effect = [Event(EventType.OK, {}), Event(EventType.ERROR, {})]
+    asyncio.run(bridge.send('channel', '0', 'Moin'))
+    assert bridge.store.history('channel', '0')[0]['status'] == 'sent'
+    assert not bridge.ready
+    with pytest.raises(HTTPException):
+        asyncio.run(bridge.send('dm', KEY, 'Moin'))
+
+
+def test_failed_default_write_keeps_previous_value(bridge):
+    bridge.scope_supported, bridge.default_scope = True, '#old'
+    bridge.radio.commands.send.return_value = Event(EventType.ERROR, {})
+    with pytest.raises(RuntimeError):
+        asyncio.run(bridge.save_scope(ScopeInput(scope='new')))
+    assert bridge.default_scope == '#old'
