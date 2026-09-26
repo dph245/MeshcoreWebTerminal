@@ -56,6 +56,8 @@ Für Docker können Host und Port in einer `.env` gesetzt werden. Compose veröf
 
 ## Verhalten und Grenzen
 
+Im Netzmonitor lässt sich unter **Pfad-Hash beim Senden** zwischen **1, 2 und 3 Byte pro Hop** wählen. Die Einstellung wird im Companion dauerhaft gespeichert und zurückgelesen; sie gilt für ausgehende Flood-Pakete. Bestehende direkte Routen behalten ihre eigene Hash-Länge. Längere Hashes reduzieren Kollisionen, benötigen aber mehr Platz pro Hop. Ohne entsprechenden Firmware-Support bleibt die Auswahl deaktiviert. Bei unbestätigter Änderung erfolgt eine Neuverbindung, bevor wieder gesendet werden kann.
+
 Im Netzmonitor lässt sich der **Standard-Scope** des Companions lesen, ändern und mit „Ohne Scope“ löschen. Der Name wird mit `#` normalisiert und darf einschließlich `#` maximal 30 UTF-8-Bytes enthalten. Der Standard gilt für Flood-Verkehr, auch DMs ohne bekannte Route und Adverts; direkte Routen werden dadurch nicht verändert.
 
 In jedem Channel stehen **Companion-Standard**, **Ohne Scope** und **Eigene Region** zur Auswahl. Mit „Speichern“ wird die Auswahl lokal in SQLite hinterlegt und von allen Browsern geteilt. Beim Senden wird der Channel-Scope gesetzt und anschließend zurückgesetzt, damit er nicht auf andere Channels oder DMs übergreift. Wenn die Rücksetzung nicht bestätigt wird, blockiert die Anwendung weitere Sendungen bis zur Neuverbindung. Empfangene Nachrichten werden durch diese Auswahl nicht gefiltert. Die Bedienfelder hängen von den Firmware-Fähigkeiten ab; unbekannte Standard-Scope-Werte werden als nicht verfügbar angezeigt.

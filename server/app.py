@@ -328,6 +328,7 @@ class Bridge:
         return result
 
     async def refresh_locked(self):
+        await self.read_device()
         result = await self.command("get_contacts")
         self.contacts = public(result.payload)
         self.store.set_meta("contacts", self.contacts)
@@ -408,6 +409,31 @@ class Bridge:
                 self.channels.sort(key=lambda c: c["index"])
             self.store.set_meta("channels", self.channels)
             self.log("CHANNEL_REMOVED" if remove else "CHANNEL_ADDED", {"index": index, "name": name})
+            self.changed()
+            return self.snapshot()
+
+    async def read_device(self):
+        result = await self.command("send_device_query")
+        self.device = public(result.payload)
+
+    async def save_path_hash(self, setting):
+        async with self.lock:
+            self.require_ready()
+            await self.read_device()
+            mode = self.device.get("path_hash_mode")
+            if type(mode) is not int or mode not in (0, 1, 2):
+                raise HTTPException(409, "Diese Firmware unterstützt keine einstellbare Pfad-Hash-Länge.")
+            try:
+                await self.command("set_path_hash_mode", setting.bytes - 1)
+                await self.read_device()
+                if self.device.get("path_hash_mode") != setting.bytes - 1:
+                    raise RuntimeError("Der Companion hat eine andere Pfad-Hash-Länge zurückgemeldet.")
+            except (RuntimeError, TimeoutError, ConnectionError):
+                self.device.pop("path_hash_mode", None)
+                self.ready, self.status = False, "reconnecting"
+                self.changed()
+                raise
+            self.log("PATH_HASH_UPDATED", {"bytes": setting.bytes})
             self.changed()
             return self.snapshot()
 
@@ -595,6 +621,10 @@ class ScopeInput(BaseModel):
     scope: str = Field(max_length=100)
 
 
+class PathHashInput(BaseModel):
+    bytes: int = Field(strict=True, ge=1, le=3)
+
+
 def normalize_channel(value):
     value = value.strip()
     if not value.startswith("#"):
@@ -667,6 +697,13 @@ def create_app(db_path=None, autoconnect=None):
     @app.get("/api/messages")
     async def messages(request: Request, kind: Literal["channel", "dm"], target: str, before: int | None = None):
         return request.app.state.bridge.store.history(kind, target[:12] if kind == "dm" else target, before)
+
+    @app.post("/api/path-hash")
+    async def path_hash(request: Request, setting: PathHashInput):
+        try:
+            return await request.app.state.bridge.save_path_hash(setting)
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, f"Pfad-Hash-Länge unbestätigt: {str(exc) or 'Timeout'}. Nach Neuverbindung prüfen.") from exc
 
     @app.post("/api/scopes")
     async def scopes(request: Request, setting: ScopeInput):

@@ -113,6 +113,7 @@ def test_secret_redaction():
 
 def test_unnamed_public_channel_loaded_without_exposing_key(bridge):
     bridge.device = {'max_channels': 2}
+    bridge.radio.commands.send_device_query = AsyncMock(return_value=Event(EventType.DEVICE_INFO, bridge.device))
     bridge.radio.commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, bridge.contacts))
     bridge.radio.commands.get_channel = AsyncMock(side_effect=[
         Event(EventType.CHANNEL_INFO, {'channel_idx': 0, 'channel_name': '', 'channel_secret': b'\x01' * 16}),
@@ -482,3 +483,55 @@ def test_chat_scope_survives_restart(tmp_path):
     assert store.history('channel', '0')[0]['reception']['scope'] == scope
     assert store.history('channel', '0')[0]['reception']['path'] == ['ab']
     store.db.close()
+
+
+@pytest.mark.parametrize('size', [1, 2, 3])
+def test_path_hash_saved_and_read_back(bridge, size):
+    from server.app import PathHashInput
+    bridge.radio.commands.send_device_query = AsyncMock(side_effect=[
+        Event(EventType.DEVICE_INFO, {'path_hash_mode': 0}),
+        Event(EventType.DEVICE_INFO, {'path_hash_mode': size - 1}),
+    ])
+    bridge.radio.commands.set_path_hash_mode = AsyncMock(return_value=Event(EventType.OK, {}))
+    result = asyncio.run(bridge.save_path_hash(PathHashInput(bytes=size)))
+    bridge.radio.commands.set_path_hash_mode.assert_awaited_once_with(size - 1)
+    assert result['device']['path_hash_mode'] == size - 1
+    assert bridge.ready
+
+
+@pytest.mark.parametrize('failure', ['mismatch', 'timeout', 'rejected'])
+def test_path_hash_unconfirmed_blocks_sends(bridge, failure):
+    from server.app import PathHashInput
+    bridge.radio.commands.send_device_query = AsyncMock(side_effect=[
+        Event(EventType.DEVICE_INFO, {'path_hash_mode': 0}),
+        TimeoutError() if failure == 'timeout' else Event(EventType.DEVICE_INFO, {'path_hash_mode': 0}),
+    ])
+    bridge.radio.commands.set_path_hash_mode = AsyncMock(return_value=Event(
+        EventType.ERROR if failure == 'rejected' else EventType.OK, {}))
+    with pytest.raises((RuntimeError, TimeoutError)):
+        asyncio.run(bridge.save_path_hash(PathHashInput(bytes=3)))
+    assert not bridge.ready
+    assert bridge.status == 'reconnecting'
+    assert 'path_hash_mode' not in bridge.device
+    with pytest.raises(HTTPException):
+        asyncio.run(bridge.send('channel', '0', 'Test'))
+    bridge.radio.commands.send_chan_msg.assert_not_awaited()
+
+
+def test_path_hash_unsupported(bridge):
+    from server.app import PathHashInput
+    bridge.radio.commands.send_device_query = AsyncMock(return_value=Event(EventType.DEVICE_INFO, {}))
+    bridge.radio.commands.set_path_hash_mode = AsyncMock()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(bridge.save_path_hash(PathHashInput(bytes=2)))
+    assert exc.value.status_code == 409
+    bridge.radio.commands.set_path_hash_mode.assert_not_awaited()
+
+
+def test_path_hash_api_validation_and_offline(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'path.db'), autoconnect=False)) as client:
+        headers = {'X-Meshcore-Client': 'web'}
+        assert client.post('/api/path-hash', json={'bytes': 2}).status_code == 403
+        for invalid in [0, 4, -1, True, '2', 1.5, None]:
+            assert client.post('/api/path-hash', json={'bytes': invalid}, headers=headers).status_code == 422
+        assert client.post('/api/path-hash', json={'bytes': 2}, headers=headers).status_code == 409

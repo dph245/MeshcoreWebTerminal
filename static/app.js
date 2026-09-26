@@ -4,6 +4,7 @@ let selection = null, paused = false, sending = false, backendOnline = false, hi
 let messageRows = [], olderAvailable = false, connectionError = false;
 let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
 let channelSaving = false;
+let pathHashSaving = false, pathHashDirty = false;
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
@@ -72,6 +73,7 @@ function applyState(data) {
   $('radio-info').replaceChildren(...info.map(([key,value])=>{const row=node('div');row.append(node('dt','',key),node('dd','',value));return row;}));
   updateConnection(); renderNav(); renderChart(); if(!paused) renderEvents();
   renderScopes();
+  renderPathHash();
   renderChannelManager();
   if(state.error) {connectionError=true;error(`Verbindung: ${state.error} · Erneuter Versuch erfolgt automatisch.`);}
   else if(connectionError) {connectionError=false;error(null);}
@@ -86,6 +88,7 @@ function updateConnection() {
   $('refresh').disabled=!connected;
   updateComposer();
   renderScopes();
+  renderPathHash();
   renderChannelManager();
 }
 function renderChannelManager() {
@@ -116,6 +119,23 @@ $('manage-channels').onclick=()=>{
   $('new-channel-name').focus({preventScroll:true});
 };
 $('add-channel-form').onsubmit=e=>{e.preventDefault();if(!channelSaving)changeChannel('/api/channels',{name:$('new-channel-name').value});};
+function renderPathHash() {
+  const mode=state.device.path_hash_mode, supported=Number.isInteger(mode)&&mode>=0&&mode<=2;
+  $('path-hash-current').textContent=supported?`${mode+1} Byte`:'Nicht verfügbar';
+  if(!pathHashDirty) $('path-hash-bytes').value=supported?String(mode+1):'';
+  for(const id of ['path-hash-bytes','path-hash-save']) $(id).disabled=!backendOnline||state.status!=='connected'||!supported||pathHashSaving;
+}
+$('path-hash-bytes').onchange=()=>{pathHashDirty=true;$('path-hash-feedback').textContent='';};
+$('path-hash-form').onsubmit=async e=>{
+  e.preventDefault();
+  pathHashSaving=true;$('path-hash-feedback').textContent='Wird gespeichert …';renderPathHash();
+  try {
+    const result=await api('/api/path-hash',{bytes:Number($('path-hash-bytes').value)});
+    pathHashDirty=false;applyState(result);$('path-hash-feedback').textContent='Im Companion gespeichert und bestätigt.';
+  } catch(e) {$('path-hash-feedback').textContent=e.message;}
+  finally {pathHashSaving=false;renderPathHash();}
+};
+
 function scopeLabel(scope) {return scope === '*' ? 'Ohne Scope' : scope || 'Companion-Standard';}
 function renderScopes() {
   const scopes=state.scopes||{}, online=backendOnline&&state.status==='connected';
