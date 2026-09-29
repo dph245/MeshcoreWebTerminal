@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from meshcore import EventType, MeshCore
 from meshcore.tcp_cx import TCPConnection
 from meshcore.packets import CommandType
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 def public(value):
@@ -27,7 +27,7 @@ def public(value):
         return value.hex()
     if isinstance(value, dict):
         return {str(k): public(v) for k, v in value.items()
-                if not any(s in str(k).lower() for s in ("secret", "private", "pin"))}
+                if not any(s in str(k).lower() for s in ("secret", "private", "pin", "password"))}
     if isinstance(value, (list, tuple)):
         return [public(v) for v in value]
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -145,17 +145,27 @@ class Store:
                 self.db.execute("ALTER TABLE messages ADD COLUMN echo_key TEXT")
             self.db.execute("CREATE INDEX IF NOT EXISTS message_echo ON messages(echo_key)")
             self.db.execute("CREATE TABLE IF NOT EXISTS repeater_receipts (message_id INTEGER, hop TEXT, PRIMARY KEY(message_id, hop))")
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}
+            for name, definition in (("tx_route", "TEXT"), ("tx_attempt", "INTEGER"), ("sender_key", "TEXT")):
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
+            self.db.execute("CREATE TABLE IF NOT EXISTS message_acks (message_id INTEGER, code TEXT, PRIMARY KEY(message_id, code))")
+            self.db.execute("CREATE INDEX IF NOT EXISTS message_ack_code ON message_acks(code)")
+            # A process restart must not silently restart radio transmissions.
+            self.db.execute("UPDATE messages SET status='interrupted' WHERE status='sending'")
 
-    def save(self, kind, target, direction, text, timestamp, status, ack=None, reception=None, echo_key=None):
+    def save(self, kind, target, direction, text, timestamp, status, ack=None, reception=None, echo_key=None, sender_key=None):
         fingerprint = None
         if direction == "in":
-            fingerprint = hashlib.sha256(json.dumps(
-                [kind, target, text, timestamp], ensure_ascii=False).encode()).hexdigest()
+            identity = [kind, target, text, timestamp]
+            if kind == "room":
+                identity.append(sender_key)
+            fingerprint = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
         with self.db:
             cursor = self.db.execute(
-                "INSERT OR IGNORE INTO messages(kind,target,direction,text,timestamp,status,ack,fingerprint,reception,echo_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO messages(kind,target,direction,text,timestamp,status,ack,fingerprint,reception,echo_key,sender_key) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (kind, target, direction, text, timestamp, status, ack, fingerprint,
-                 json.dumps(reception) if reception is not None else None, echo_key))
+                 json.dumps(reception) if reception is not None else None, echo_key, sender_key))
         return cursor.lastrowid if cursor.rowcount else None
 
     def history(self, kind, target, before=None):
@@ -195,7 +205,23 @@ class Store:
 
     def acknowledge(self, code):
         with self.db:
-            self.db.execute("UPDATE messages SET status='delivered' WHERE ack=? AND direction='out'", (code,))
+            self.db.execute("""UPDATE messages SET status='delivered' WHERE direction='out'
+                AND (ack=? OR id IN (SELECT message_id FROM message_acks WHERE code=?))""", (code, code))
+
+    def record_attempt(self, mid, code, route, attempt):
+        with self.db:
+            if code:
+                self.db.execute("INSERT OR IGNORE INTO message_acks VALUES(?,?)", (mid, code))
+            self.db.execute("""UPDATE messages SET ack=?, tx_route=?, tx_attempt=?,
+                status=CASE WHEN status='delivered' THEN status ELSE 'sending' END WHERE id=?""",
+                (code, route, attempt, mid))
+
+    def delivered(self, mid):
+        return self.db.execute("SELECT status FROM messages WHERE id=?", (mid,)).fetchone()[0] == "delivered"
+
+    def finish_send(self, mid, status):
+        with self.db:
+            self.db.execute("UPDATE messages SET status=? WHERE id=? AND status!='delivered'", (status, mid))
 
     def archive_channel(self, index):
         # Slot numbers are reused by the radio; old messages must not become
@@ -238,11 +264,18 @@ class Bridge:
         self.acks = deque(maxlen=200)
         self.listeners = set()
         self.task = None
+        self.pending_dms = {}
+        self.dm_wakeups = {}
+        self.rooms = {}
+        self.room_login_task = None
+        self.room_sends = {}
+        self.room_timestamps = {}
 
     def snapshot(self):
         return public(dict(status=self.status, error=self.error, host=self.host, port=self.port,
                            channels=self.channels, contacts=self.contacts, info=self.info,
                            device=self.device, stats=self.stats, events=list(self.events),
+                           rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
                            scopes={"default": self.default_scope, "supported": self.scope_supported,
                                    "channels": self.channel_scopes}))
 
@@ -282,6 +315,12 @@ class Bridge:
         elif name in ("CONTACT_MSG_RECV", "CHANNEL_MSG_RECV"):
             kind = "channel" if name == "CHANNEL_MSG_RECV" else "dm"
             target = str(p["channel_idx"]) if kind == "channel" else p["pubkey_prefix"]
+            sender_key = None
+            if kind == "dm":
+                room = any(k.startswith(target) and c.get("type") == 3 for k, c in self.contacts.items())
+                if room or p.get("txt_type") == 2:
+                    kind = "room"
+                    sender_key = p.get("signature") if p.get("txt_type") == 2 else target
             key = None
             if kind == "channel" and target in self.channel_hashes and isinstance(p.get("sender_timestamp"), int):
                 channel_name = self.channel_names.get(target)
@@ -290,28 +329,51 @@ class Bridge:
             # DMs use the protocol's 6-byte prefix, including for unknown senders.
             mid = self.store.save(kind, target, "in", p.get("text", ""),
                                   p.get("sender_timestamp", time.time()), "received",
-                                  reception=receive_path(p), echo_key=key)
+                                  reception=receive_path(p), echo_key=key, sender_key=sender_key)
             scope_updated = False
             if key:
                 for packet_key, scope in self.recent_scopes:
                     if packet_key == key:
                         scope_updated = self.store.record_received_scope(key, scope) or scope_updated
-            if kind == "dm" and not any(k.startswith(target) for k in self.contacts):
-                self.contacts[target] = {"public_key": target, "adv_name": target, "type": 1, "unknown": True}
+            if kind in ("dm", "room") and not any(k.startswith(target) for k in self.contacts):
+                self.contacts[target] = {"public_key": target, "adv_name": target, "type": 3 if kind == "room" else 1, "unknown": True}
                 self.store.set_meta("contacts", self.contacts)
                 self.changed()
             if mid or scope_updated:
                 self.emit("message", {"kind": kind, "target": target})
+            self.log(name, p)
+        elif name in ("LOGIN_SUCCESS", "LOGIN_FAILED"):
+            prefix = p.get("pubkey_prefix") or public(event.attributes).get("pubkey_prefix")
+            matches = [key for key, room in self.rooms.items()
+                       if prefix and key.startswith(prefix) and room["status"] == "logging_in"]
+            if len(matches) == 1:
+                room = self.rooms[matches[0]]
+                if name == "LOGIN_SUCCESS":
+                    acl = p.get("acl_permissions")
+                    can_post = (acl & 3) >= 2 if isinstance(acl, int) else p.get("permissions") in (0, 1)
+                    room.update(status="logged_in", can_post=can_post, error=None)
+                else:
+                    room.update(status="failed", can_post=False, error="Anmeldung vom Roomserver abgelehnt.")
+                if self.room_login_task:
+                    self.room_login_task.cancel()
+                    self.room_login_task = None
+                self.changed()
             self.log(name, p)
         elif name == "ACK":
             code = p.get("code") or public(event.attributes).get("code")
             if code:
                 self.acks.append(code)
                 self.store.acknowledge(code)
+                for mid, wakeup in self.dm_wakeups.items():
+                    if self.store.delivered(mid):
+                        wakeup.set()
                 self.emit("message", {"ack": code})
             self.log(name, p)
         elif name == "DISCONNECTED":
             self.ready = False
+            self.invalidate_rooms()
+            for task in self.pending_dms.values():
+                task.cancel()
             self.status = "reconnecting" if self.desired else "offline"
             self.changed()
         elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "PATH_UPDATE", "TRACE_DATA"):
@@ -329,6 +391,7 @@ class Bridge:
 
     async def refresh_locked(self):
         await self.read_device()
+        await self.read_self_info()
         result = await self.command("get_contacts")
         self.contacts = public(result.payload)
         self.store.set_meta("contacts", self.contacts)
@@ -415,6 +478,40 @@ class Bridge:
     async def read_device(self):
         result = await self.command("send_device_query")
         self.device = public(result.payload)
+
+    async def read_self_info(self):
+        result = await self.command("send_appstart")
+        self.info = public(result.payload)
+
+    async def save_multi_acks(self, setting):
+        async with self.lock:
+            self.require_ready()
+            await self.read_device()
+            await self.read_self_info()
+            limits = {"multi_acks": 1, "manual_add_contacts": 1, "adv_loc_policy": 2,
+                      "telemetry_mode_base": 3, "telemetry_mode_loc": 3, "telemetry_mode_env": 3}
+            if int(self.device.get("fw ver", 0)) < 7 or any(
+                (type(self.info.get(key)) not in (int, bool) if key == "manual_add_contacts"
+                 else type(self.info.get(key)) is not int) or not 0 <= self.info[key] <= maximum
+                for key, maximum in limits.items()
+            ):
+                raise HTTPException(409, "ACK-Einstellung oder Companion-Parameter nicht verfügbar.")
+            # SET_OTHER_PARAMS writes several settings at once. Preserve the
+            # values freshly read from the companion, including telemetry.
+            updated = {**self.info, "multi_acks": int(setting.enabled)}
+            try:
+                await self.command("set_other_params_from_infos", updated)
+                await self.read_self_info()
+                if self.info.get("multi_acks") != int(setting.enabled):
+                    raise RuntimeError("Der Companion hat die ACK-Einstellung nicht bestätigt.")
+            except (RuntimeError, TimeoutError, ConnectionError):
+                self.info.pop("multi_acks", None)
+                self.ready, self.status = False, "reconnecting"
+                self.changed()
+                raise
+            self.log("MULTI_ACKS_UPDATED", {"enabled": setting.enabled})
+            self.changed()
+            return self.snapshot()
 
     async def save_path_hash(self, setting):
         async with self.lock:
@@ -525,6 +622,8 @@ class Bridge:
                 self.log("CONNECTION_ERROR", {"message": self.error})
             finally:
                 self.ready = False
+                self.invalidate_rooms()
+                await self.stop_dms()
                 if self.radio:
                     with suppress(Exception):
                         await asyncio.wait_for(self.radio.disconnect(), 5)
@@ -536,6 +635,156 @@ class Bridge:
     def require_ready(self):
         if not self.ready or not self.radio or not self.radio.is_connected:
             raise HTTPException(409, "Der Companion ist nicht verbunden.")
+
+    def require_room(self, target):
+        contact = self.contacts.get(target)
+        if not contact or contact.get("type") != 3 or contact.get("unknown"):
+            raise HTTPException(404, "Kein gespeicherter Roomserver-Kontakt.")
+        return contact
+
+    def invalidate_rooms(self):
+        if self.room_login_task:
+            self.room_login_task.cancel()
+            self.room_login_task = None
+        for room in self.rooms.values():
+            room.update(status="disconnected", can_post=False, error=None)
+
+    async def room_login_expiry(self, target, timeout):
+        try:
+            await asyncio.sleep(timeout)
+            room = self.rooms[target]
+            if room["status"] == "logging_in":
+                room.update(status="failed", can_post=False,
+                            error="Keine Anmeldebestätigung. Passwort und Erreichbarkeit prüfen.")
+                self.changed()
+        except asyncio.CancelledError:
+            pass
+
+    async def login_room(self, target, password):
+        if "\x00" in password or len(password.encode("utf-8")) > 15:
+            raise HTTPException(422, "Das Room-Passwort darf höchstens 15 UTF-8-Bytes und keine Nullzeichen enthalten.")
+        async with self.lock:
+            self.require_ready()
+            self.require_room(target)
+            if any(room["status"] == "logging_in" for room in self.rooms.values()):
+                raise HTTPException(409, "Eine Roomserver-Anmeldung läuft bereits.")
+            if target in self.room_sends:
+                raise HTTPException(409, "Bitte den laufenden Room-Beitrag abwarten.")
+            self.rooms[target] = {"status": "logging_in", "can_post": False, "error": None}
+            self.changed()
+            try:
+                result = await self.command("send_login", target, password)
+            except (RuntimeError, TimeoutError, ConnectionError):
+                # Never return command details that could contain credentials.
+                self.rooms[target].update(status="failed", error="Anmeldung konnte nicht gesendet werden.")
+                self.changed()
+                raise HTTPException(502, "Anmeldung konnte nicht gesendet werden.") from None
+            if self.rooms[target]["status"] == "logging_in":
+                timeout = max(10.0, result.payload.get("suggested_timeout", 10000) / 1000 * 1.2)
+                self.room_login_task = asyncio.create_task(self.room_login_expiry(target, timeout))
+            return self.snapshot()
+
+    async def logout_room(self, target):
+        async with self.lock:
+            self.require_ready()
+            self.require_room(target)
+            await self.command("send_logout", target)
+            if self.rooms.get(target, {}).get("status") == "logging_in" and self.room_login_task:
+                self.room_login_task.cancel()
+                self.room_login_task = None
+            mid = self.room_sends.get(target)
+            if mid in self.pending_dms:
+                self.pending_dms[mid].cancel()
+            self.rooms[target] = {"status": "disconnected", "can_post": False, "error": None}
+            self.changed()
+            return self.snapshot()
+
+    async def stop_dms(self):
+        tasks = list(self.pending_dms.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def dm_done(self, mid):
+        # Also covers cancellation before the coroutine's first execution.
+        if mid in self.pending_dms:
+            self.store.finish_send(mid, "interrupted")
+            self.pending_dms.pop(mid, None)
+            self.dm_wakeups.pop(mid, None)
+            self.emit("message", {"id": mid})
+        for target, pending in list(self.room_sends.items()):
+            if pending == mid:
+                del self.room_sends[target]
+                self.changed()
+
+    def dm_attempt(self, mid, result, route, attempt):
+        payload = public(result.payload)
+        code = payload.get("expected_ack")
+        self.store.record_attempt(mid, code, route, attempt)
+        if code and code in self.acks:
+            self.store.acknowledge(code)
+        self.emit("message", {"id": mid})
+
+    async def wait_dm_ack(self, mid, result):
+        # The companion estimates airtime and route latency in milliseconds.
+        timeout = max(5.0, result.payload.get("suggested_timeout", 10000) / 1000 * 1.2)
+        if not self.store.delivered(mid):
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self.dm_wakeups[mid].wait(), timeout)
+
+    async def retry_dm(self, mid, target, text, timestamp, result, radio):
+        route = "flood" if result.payload.get("type") == 1 else "direct"
+        direct_count, flood_count = (0, 1) if route == "flood" else (1, 0)
+        attempt = 0
+        try:
+            while True:
+                await self.wait_dm_ack(mid, result)
+                if self.store.delivered(mid):
+                    return
+                if flood_count >= 3:
+                    self.store.finish_send(mid, "unconfirmed")
+                    return
+                async with self.lock:
+                    if self.store.delivered(mid):
+                        return
+                    self.require_ready()
+                    if self.radio is not radio:
+                        raise ConnectionError("Companion-Verbindung gewechselt")
+                    contact = self.contacts[target]
+                    if contact.get("type") == 3 and not self.rooms.get(target, {}).get("can_post"):
+                        raise RuntimeError("Roomserver-Anmeldung nicht mehr aktiv")
+                    if direct_count >= 3 or flood_count:
+                        # Reset on each flood attempt: a PATH_UPDATE may have
+                        # supplied a new direct route while waiting for an ACK.
+                        await self.command("reset_path", target)
+                        contact.update(out_path="", out_path_len=-1)
+                        self.store.set_meta("contacts", self.contacts)
+                        self.changed()
+                    if self.store.delivered(mid):
+                        return
+                    attempt += 1
+                    result = await self.command("send_msg", contact, text, timestamp, attempt)
+                    route = "flood" if result.payload.get("type") == 1 else "direct"
+                    if route == "flood":
+                        flood_count += 1
+                    else:
+                        direct_count += 1
+                    self.dm_attempt(mid, result, route, flood_count if route == "flood" else direct_count)
+                    self.log("MESSAGE_RETRY", {"id": mid, "route": route, "attempt": attempt + 1})
+                    # A device that ignores reset_path must not cause an endless loop.
+                    if direct_count > 3:
+                        raise RuntimeError("Companion hat den Wechsel zu Flood nicht bestätigt")
+        except asyncio.CancelledError:
+            self.store.finish_send(mid, "interrupted")
+            raise
+        except (RuntimeError, TimeoutError, ConnectionError, HTTPException, KeyError) as exc:
+            self.store.finish_send(mid, "interrupted")
+            self.log("MESSAGE_RETRY_ERROR", {"id": mid, "message": str(exc) or type(exc).__name__})
+        finally:
+            self.emit("message", {"id": mid})
+            self.pending_dms.pop(mid, None)
+            self.dm_wakeups.pop(mid, None)
 
     async def send(self, kind, target, text):
         text = text.strip()
@@ -580,14 +829,40 @@ class Bridge:
                             self.log("SCOPE_RESET_ERROR", {"message": "Scope-Rücksetzung unbestätigt; Neuverbindung erforderlich."})
                             self.changed()
             else:
+                dm_target = target
                 contact = self.contacts.get(target)
-                if not contact or contact.get("unknown") or contact.get("type") != 1:
+                if kind == "room":
+                    contact = self.require_room(target)
+                    if not self.rooms.get(target, {}).get("can_post"):
+                        raise HTTPException(409, "Zuerst mit Schreibberechtigung am Roomserver anmelden.")
+                    if target in self.room_sends:
+                        raise HTTPException(409, "Bitte die Bestätigung des laufenden Room-Beitrags abwarten.")
+                    if len(text.encode("utf-8")) > 150:
+                        raise HTTPException(422, "Ein Room-Beitrag darf höchstens 150 UTF-8-Bytes enthalten.")
+                    # Rooms reject older timestamps and consider equal ones a retry.
+                    clock = await self.command("get_time")
+                    timestamp = max(int(clock.payload["time"]) + 1, self.room_timestamps.get(target, 0) + 1)
+                    self.room_timestamps[target] = timestamp
+                elif not contact or contact.get("unknown") or contact.get("type") != 1:
                     raise HTTPException(404, "Kein gespeicherter Chat-Kontakt für diese Direktnachricht.")
                 result = await self.command("send_msg", contact, text, timestamp)
                 target = target[:12]
-            ack = public(result.payload).get("expected_ack") if kind == "dm" else None
+            ack = public(result.payload).get("expected_ack") if kind in ("dm", "room") else None
             status = "delivered" if ack and ack in self.acks else "sent"
             mid = self.store.save(kind, target, "out", text, timestamp, status, ack, echo_key=echo_key)
+            if kind in ("dm", "room"):
+                route = "flood" if result.payload.get("type") == 1 else "direct"
+                self.dm_attempt(mid, result, route, 1)
+                status = "delivered" if self.store.delivered(mid) else "sending"
+                if status != "delivered":
+                    if kind == "room":
+                        self.room_sends[dm_target] = mid
+                    self.dm_wakeups[mid] = asyncio.Event()
+                    self.pending_dms[mid] = asyncio.create_task(
+                        self.retry_dm(mid, dm_target, text, timestamp, result, self.radio))
+                    self.pending_dms[mid].add_done_callback(lambda task, mid=mid: self.dm_done(mid))
+                    if kind == "room":
+                        self.changed()
             if echo_key:
                 for key, hop in self.recent_echoes:
                     if key == echo_key:
@@ -598,9 +873,17 @@ class Bridge:
 
 
 class MessageInput(BaseModel):
-    kind: Literal["channel", "dm"]
+    kind: Literal["channel", "dm", "room"]
     target: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=160)
+
+
+class RoomTarget(BaseModel):
+    target: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class RoomLogin(RoomTarget):
+    password: SecretStr = SecretStr("")
 
 
 def normalize_scope(value):
@@ -623,6 +906,10 @@ class ScopeInput(BaseModel):
 
 class PathHashInput(BaseModel):
     bytes: int = Field(strict=True, ge=1, le=3)
+
+
+class MultiAcksInput(BaseModel):
+    enabled: bool = Field(strict=True)
 
 
 def normalize_channel(value):
@@ -657,6 +944,7 @@ def create_app(db_path=None, autoconnect=None):
         bridge.task.cancel()
         with suppress(asyncio.CancelledError):
             await bridge.task
+        await bridge.stop_dms()
         store.db.close()
 
     app = FastAPI(lifespan=lifespan)
@@ -695,8 +983,19 @@ def create_app(db_path=None, autoconnect=None):
         return bridge.snapshot()
 
     @app.get("/api/messages")
-    async def messages(request: Request, kind: Literal["channel", "dm"], target: str, before: int | None = None):
-        return request.app.state.bridge.store.history(kind, target[:12] if kind == "dm" else target, before)
+    async def messages(request: Request, kind: Literal["channel", "dm", "room"], target: str, before: int | None = None):
+        return request.app.state.bridge.store.history(kind, target[:12] if kind in ("dm", "room") else target, before)
+
+    @app.post("/api/rooms/login")
+    async def room_login(request: Request, setting: RoomLogin):
+        return await request.app.state.bridge.login_room(setting.target.lower(), setting.password.get_secret_value())
+
+    @app.post("/api/rooms/logout")
+    async def room_logout(request: Request, setting: RoomTarget):
+        try:
+            return await request.app.state.bridge.logout_room(setting.target.lower())
+        except (RuntimeError, TimeoutError, ConnectionError):
+            raise HTTPException(502, "Lokale Abmeldung vom Companion nicht bestätigt.") from None
 
     @app.post("/api/path-hash")
     async def path_hash(request: Request, setting: PathHashInput):
@@ -704,6 +1003,13 @@ def create_app(db_path=None, autoconnect=None):
             return await request.app.state.bridge.save_path_hash(setting)
         except (RuntimeError, TimeoutError, ConnectionError) as exc:
             raise HTTPException(502, f"Pfad-Hash-Länge unbestätigt: {str(exc) or 'Timeout'}. Nach Neuverbindung prüfen.") from exc
+
+    @app.post("/api/multi-acks")
+    async def multi_acks(request: Request, setting: MultiAcksInput):
+        try:
+            return await request.app.state.bridge.save_multi_acks(setting)
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, "ACK-Einstellung unbestätigt. Nach Neuverbindung prüfen.") from exc
 
     @app.post("/api/scopes")
     async def scopes(request: Request, setting: ScopeInput):

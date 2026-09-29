@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -14,6 +14,7 @@ from server.app import channel_echo_key, repeater_echo
 
 
 KEY = 'abcdef123456' + 'ab' * 26
+ROOM = '123456abcdef' + 'cd' * 26
 
 
 @pytest.fixture
@@ -25,6 +26,7 @@ def bridge():
     bridge.channels = [{'index': 0, 'name': 'Public'}]
     bridge.contacts = {KEY: {'public_key': KEY, 'adv_name': 'Test', 'type': 1}}
     bridge.radio = SimpleNamespace(is_connected=True, commands=SimpleNamespace(
+        send_appstart=AsyncMock(return_value=Event(EventType.SELF_INFO, {})),
         get_default_flood_scope=AsyncMock(return_value=Event(EventType.DEFAULT_FLOOD_SCOPE, {})),
         set_flood_scope=AsyncMock(return_value=Event(EventType.OK, {})),
         send=AsyncMock(return_value=Event(EventType.OK, {})),
@@ -32,6 +34,210 @@ def bridge():
         send_msg=AsyncMock(return_value=Event(EventType.MSG_SENT, {'expected_ack': bytes.fromhex('1234abcd')})),
     ))
     yield bridge
+    store.db.close()
+
+
+@pytest.fixture
+def room_bridge(bridge):
+    bridge.contacts[ROOM] = {'public_key': ROOM, 'adv_name': 'Testroom', 'type': 3}
+    bridge.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000}))
+    bridge.radio.commands.send_logout = AsyncMock(return_value=Event(EventType.OK, {}))
+    bridge.radio.commands.get_time = AsyncMock(return_value=Event(EventType.CURRENT_TIME, {'time': 1000}))
+    return bridge
+
+
+def test_room_login_requires_matching_confirmation(room_bridge):
+    b = room_bridge
+    async def scenario():
+        snapshot = await b.login_room(ROOM, 'hello')
+        assert snapshot['rooms'][ROOM]['status'] == 'logging_in'
+        assert 'hello' not in str(snapshot)
+        with pytest.raises(HTTPException):
+            await b.login_room(ROOM, 'hello')
+        await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': KEY[:12], 'permissions': 0}))
+        assert b.rooms[ROOM]['status'] == 'logging_in'
+        await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': ROOM[:12], 'permissions': 0, 'acl_permissions': 2}))
+        assert b.rooms[ROOM]['can_post']
+        assert b.rooms[ROOM]['status'] == 'logged_in'
+        assert b.room_login_task is None
+        assert not b.store.get_meta('rooms', {})
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(('permissions', 'acl', 'can_post'), [(2, None, False), (0, None, True), (1, None, True), (0, 0, False), (0, 1, False), (0, 2, True), (1, 3, True)])
+def test_room_permissions_and_early_login(room_bridge, permissions, acl, can_post):
+    b = room_bridge
+    async def send_login(*args):
+        payload = {'pubkey_prefix': ROOM[:12], 'permissions': permissions}
+        if acl is not None:
+            payload['acl_permissions'] = acl
+        await b.on_event(Event(EventType.LOGIN_SUCCESS, payload))
+        return Event(EventType.MSG_SENT, {})
+    b.radio.commands.send_login.side_effect = send_login
+    async def scenario():
+        await b.login_room(ROOM, '')
+        assert b.rooms[ROOM]['can_post'] is can_post
+        assert b.room_login_task is None
+    asyncio.run(scenario())
+
+
+def test_room_timeout_and_late_login_do_not_enable_posting(room_bridge):
+    b = room_bridge
+    async def scenario():
+        await b.login_room(ROOM, 'hello')
+        b.room_login_task.cancel()
+        await b.room_login_expiry(ROOM, 0)
+        assert b.rooms[ROOM]['status'] == 'failed'
+        await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': ROOM[:12], 'permissions': 0}))
+        assert not b.rooms[ROOM]['can_post']
+    asyncio.run(scenario())
+
+
+def test_room_login_errors_do_not_expose_password(room_bridge):
+    b = room_bridge
+    async def scenario():
+        for password in ['ä' * 8, 'a\0b']:
+            with pytest.raises(HTTPException) as error:
+                await b.login_room(ROOM, password)
+            assert error.value.status_code == 422
+        b.radio.commands.send_login.assert_not_awaited()
+        b.radio.commands.send_login.side_effect = RuntimeError('secret-pass')
+        with pytest.raises(HTTPException) as error:
+            await b.login_room(ROOM, 'secret-pass')
+        assert 'secret-pass' not in str(error.value)
+        assert 'secret-pass' not in str(b.snapshot())
+    asyncio.run(scenario())
+
+
+def test_room_rejected_login_and_disconnect(room_bridge):
+    b = room_bridge
+    async def scenario():
+        await b.login_room(ROOM, 'hello')
+        await b.on_event(Event(EventType.LOGIN_FAILED, {'pubkey_prefix': ROOM[:12]}))
+        assert b.rooms[ROOM]['status'] == 'failed'
+        assert b.room_login_task is None
+        await b.login_room(ROOM, 'hello')
+        await b.on_event(Event(EventType.DISCONNECTED, {}))
+        assert b.rooms[ROOM]['status'] == 'disconnected'
+        assert not b.rooms[ROOM]['can_post']
+        assert b.room_login_task is None
+    asyncio.run(scenario())
+
+
+def test_room_posts_require_login_and_are_serialized(room_bridge):
+    b = room_bridge
+    async def scenario():
+        with pytest.raises(HTTPException):
+            await b.send('room', ROOM, 'Hello')
+        with pytest.raises(HTTPException):
+            await b.send('dm', ROOM, 'Hello')
+        with pytest.raises(HTTPException):
+            await b.login_room(KEY, 'hello')
+        b.rooms[ROOM] = {'status': 'logged_in', 'can_post': True}
+        with pytest.raises(HTTPException):
+            await b.send('room', ROOM, 'ä' * 76)
+        first = await b.send('room', ROOM, 'First')
+        assert b.radio.commands.send_msg.call_args.args[2] == 1001
+        assert b.snapshot()['rooms'][ROOM]['pending_send']
+        with pytest.raises(HTTPException):
+            await b.send('room', ROOM, 'Second')
+        with pytest.raises(HTTPException):
+            await b.login_room(ROOM, 'hello')
+        task = b.pending_dms[first['id']]
+        await b.on_event(Event(EventType.ACK, {'code': '1234abcd'}))
+        await task
+        await asyncio.sleep(0)  # Task completion releases the room slot.
+        await b.send('room', ROOM, 'Second')
+        assert b.radio.commands.send_msg.call_args.args[2] == 1002
+        assert len(b.store.history('room', ROOM[:12])) == 2
+        assert b.store.history('dm', ROOM[:12]) == []
+        await b.stop_dms()
+    asyncio.run(scenario())
+
+
+def test_room_logout_stops_post_retries(room_bridge):
+    b = room_bridge
+    async def scenario():
+        b.rooms[ROOM] = {'status': 'logged_in', 'can_post': True}
+        await b.send('room', ROOM, 'Hello')
+        await b.logout_room(ROOM)
+        await b.stop_dms()
+        assert not b.room_sends
+        assert b.rooms[ROOM]['status'] == 'disconnected'
+        assert b.store.history('room', ROOM[:12])[0]['status'] == 'interrupted'
+        b.radio.commands.send_logout.assert_awaited_once_with(ROOM)
+    asyncio.run(scenario())
+
+
+def test_room_messages_keep_original_author_and_deduplicate(room_bridge):
+    b = room_bridge
+    async def scenario():
+        payload = {'pubkey_prefix': ROOM[:12], 'txt_type': 2, 'signature': KEY[:8],
+                   'sender_timestamp': 123, 'text': 'Same text', 'path_len': 255}
+        for _ in range(2):
+            await b.on_event(Event(EventType.CONTACT_MSG_RECV, payload))
+        await b.on_event(Event(EventType.CONTACT_MSG_RECV, {**payload, 'signature': '99999999'}))
+        rows = b.store.history('room', ROOM[:12])
+        assert len(rows) == 2
+        assert [r['sender_key'] for r in rows] == [KEY[:8], '99999999']
+        assert rows[0]['reception']['routing'] == 'direct'
+        assert b.store.history('dm', ROOM[:12]) == []
+        del b.contacts[ROOM]
+        await b.on_event(Event(EventType.CONTACT_MSG_RECV, {**payload, 'sender_timestamp': 124}))
+        assert b.contacts[ROOM[:12]]['type'] == 3
+        assert b.contacts[ROOM[:12]]['unknown']
+    asyncio.run(scenario())
+
+
+def test_room_api_validation_and_offline(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'rooms.db'), autoconnect=False)) as client:
+        headers = {'X-Meshcore-Client': 'web'}
+        assert client.post('/api/rooms/login', json={'target': ROOM, 'password': 'hello'}).status_code == 403
+        assert client.post('/api/rooms/login', headers=headers, json={'target': ROOM, 'password': 'hello'}).status_code == 409
+        assert client.post('/api/rooms/login', headers=headers, json={'target': KEY[:12]}).status_code == 422
+        assert client.post('/api/rooms/logout', headers=headers, json={'target': ROOM}).status_code == 409
+        assert client.get('/api/messages', params={'kind': 'room', 'target': ROOM}).json() == []
+
+
+@pytest.mark.parametrize('version', [1, 3])
+def test_room_signed_wire_message(room_bridge, version):
+    from meshcore.reader import MessageReader
+    async def scenario():
+        dispatcher = SimpleNamespace(dispatch=AsyncMock(side_effect=room_bridge.on_event))
+        reader = MessageReader(dispatcher)
+        header = b'\x07' if version == 1 else b'\x10\x10\x00\x00'
+        packet = header + bytes.fromhex(ROOM[:12]) + b'\xff\x02' + (123).to_bytes(4, 'little')
+        await reader.handle_rx(bytearray(packet + bytes.fromhex(KEY[:8]) + b'Hello Room'))
+        message = room_bridge.store.history('room', ROOM[:12])[0]
+        assert message['sender_key'] == KEY[:8]
+        assert message['text'] == 'Hello Room'
+    asyncio.run(scenario())
+
+
+def test_room_post_retries_and_ack(room_bridge):
+    b = room_bridge
+    configure_dm_retries(b, [0, 0, 0, 1, 1, 1])
+    async def scenario():
+        b.rooms[ROOM] = {'status': 'logged_in', 'can_post': True}
+        result = await b.send('room', ROOM, 'Retry Room')
+        await b.pending_dms[result['id']]
+        await asyncio.sleep(0)
+        assert b.radio.commands.send_msg.await_count == 6
+        assert not b.room_sends
+        assert b.store.history('room', ROOM[:12])[0]['status'] == 'unconfirmed'
+        await b.on_event(Event(EventType.ACK, {'code': '00000002'}))
+        assert b.store.history('room', ROOM[:12])[0]['status'] == 'delivered'
+    asyncio.run(scenario())
+
+
+def test_room_history_survives_restart(tmp_path):
+    path = str(tmp_path / 'room_history.db')
+    store = Store(path)
+    store.save('room', ROOM[:12], 'in', 'Hello', 123, 'received', sender_key=KEY[:8])
+    store.db.close()
+    store = Store(path)
+    assert store.history('room', ROOM[:12])[0]['sender_key'] == KEY[:8]
+    assert store.save('room', ROOM[:12], 'in', 'Hello', 123, 'received', sender_key=KEY[:8]) is None
     store.db.close()
 
 
@@ -57,7 +263,7 @@ def test_channel_send_and_dm_ack(bridge):
         bridge.radio.commands.send_chan_msg.assert_awaited_once()
         assert bridge.store.history('channel', '0')[0]['text'] == 'Moin!'
         await bridge.send('dm', KEY, 'Hallo')
-        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'sent'
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'sending'
         await bridge.on_event(Event(EventType.ACK, {'code': '1234abcd'}))
         assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'delivered'
     asyncio.run(scenario())
@@ -67,6 +273,151 @@ def test_early_ack(bridge):
     async def scenario():
         await bridge.on_event(Event(EventType.ACK, {'code': '1234abcd'}))
         await bridge.send('dm', KEY, 'Frühes ACK')
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'delivered'
+    asyncio.run(scenario())
+
+
+def configure_dm_retries(bridge, routes):
+    bridge.wait_dm_ack = AsyncMock()
+    bridge.radio.commands.reset_path = AsyncMock(return_value=Event(EventType.OK, {}))
+    bridge.radio.commands.send_msg.side_effect = [
+        Event(EventType.MSG_SENT, {'type': route, 'expected_ack': i.to_bytes(4, 'big'), 'suggested_timeout': 1000})
+        for i, route in enumerate(routes, 1)
+    ]
+
+
+@pytest.mark.parametrize('routes', [[0, 0, 0, 1, 1, 1], [1, 1, 1]])
+def test_dm_retry_limits_and_late_ack(bridge, routes):
+    configure_dm_retries(bridge, routes)
+    async def scenario():
+        result = await bridge.send('dm', KEY, 'Retry')
+        await bridge.pending_dms[result['id']]
+        calls = bridge.radio.commands.send_msg.call_args_list
+        assert len(calls) == len(routes)
+        assert len({call.args[2] for call in calls}) == 1  # Same timestamp.
+        assert [call.args[3] for call in calls[1:]] == list(range(1, len(routes)))
+        assert bridge.radio.commands.reset_path.await_count == (3 if routes[0] == 0 else 2)
+        rows = bridge.store.history('dm', KEY[:12])
+        assert len(rows) == 1
+        assert rows[0]['status'] == 'unconfirmed'
+        assert rows[0]['tx_route'] == 'flood'
+        assert rows[0]['tx_attempt'] == 3
+        assert not bridge.pending_dms
+        await bridge.on_event(Event(EventType.ACK, {'code': '00000001'}))
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'delivered'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('ack_wait', [1, 2, 3, 4, 6])
+def test_ack_from_earlier_attempt_stops_retries(bridge, ack_wait):
+    configure_dm_retries(bridge, [0, 0, 0, 1, 1, 1])
+    waits = 0
+    async def wait(mid, result):
+        nonlocal waits
+        waits += 1
+        # Waiting must never hold the command lock, so polling and channels work.
+        assert not bridge.lock.locked()
+        if waits == ack_wait:
+            await bridge.on_event(Event(EventType.ACK, {'code': '00000001'}))
+    bridge.wait_dm_ack = wait
+    async def scenario():
+        result = await bridge.send('dm', KEY, 'Retry')
+        await bridge.pending_dms[result['id']]
+        assert bridge.radio.commands.send_msg.await_count == ack_wait
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'delivered'
+    asyncio.run(scenario())
+
+
+def test_ack_arriving_inside_retry_command(bridge):
+    configure_dm_retries(bridge, [])
+    count = 0
+    async def send(*args):
+        nonlocal count
+        count += 1
+        code = count.to_bytes(4, 'big')
+        if count == 2:
+            await bridge.on_event(Event(EventType.ACK, {'code': code.hex()}))
+        return Event(EventType.MSG_SENT, {'type': 0, 'expected_ack': code})
+    bridge.radio.commands.send_msg.side_effect = send
+    async def scenario():
+        result = await bridge.send('dm', KEY, 'Retry')
+        await bridge.pending_dms[result['id']]
+        assert count == 2
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'delivered'
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('started', [False, True])
+def test_disconnect_cancels_pending_dm(bridge, started):
+    async def scenario():
+        await bridge.send('dm', KEY, 'Retry')
+        if started:
+            await asyncio.sleep(0)
+        await bridge.on_event(Event(EventType.DISCONNECTED, {}))
+        await bridge.stop_dms()
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'interrupted'
+        bridge.radio.commands.send_msg.assert_awaited_once()
+        assert not bridge.pending_dms
+        assert not bridge.dm_wakeups
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure', ['reset', 'send', 'connection'])
+def test_dm_retry_errors_stop_transmissions(bridge, failure):
+    configure_dm_retries(bridge, [0, 0, 0, 1, 1, 1])
+    if failure == 'reset':
+        bridge.radio.commands.reset_path.return_value = Event(EventType.ERROR, {})
+    elif failure == 'send':
+        bridge.radio.commands.send_msg.side_effect = [
+            Event(EventType.MSG_SENT, {'type': 0, 'expected_ack': b'1234'}), TimeoutError()]
+    async def scenario():
+        result = await bridge.send('dm', KEY, 'Retry')
+        if failure == 'connection':
+            bridge.ready = False
+        await bridge.pending_dms[result['id']]
+        assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'interrupted'
+        assert bridge.radio.commands.send_msg.await_count == {'reset': 3, 'send': 2, 'connection': 1}[failure]
+    asyncio.run(scenario())
+
+
+def test_dm_restart_keeps_ack_mapping_and_stops_retries(tmp_path):
+    path = str(tmp_path / 'dm.sqlite')
+    store = Store(path)
+    mid = store.save('dm', KEY[:12], 'out', 'Retry', 1, 'sent')
+    store.record_attempt(mid, 'first', 'direct', 1)
+    store.record_attempt(mid, 'second', 'direct', 2)
+    store.db.close()
+    store = Store(path)
+    assert store.history('dm', KEY[:12])[0]['status'] == 'interrupted'
+    store.acknowledge('first')
+    assert store.history('dm', KEY[:12])[0]['status'] == 'delivered'
+    store.db.close()
+
+
+@pytest.mark.parametrize(('suggested', 'expected'), [(1000, 5.0), (30000, 36.0)])
+def test_dm_ack_timeout_uses_companion_estimate(bridge, suggested, expected):
+    async def scenario():
+        mid = bridge.store.save('dm', KEY[:12], 'out', 'Wait', 1, 'sending')
+        bridge.dm_wakeups[mid] = asyncio.Event()
+        async def timeout(awaitable, seconds):
+            assert seconds == expected
+            awaitable.close()
+            raise TimeoutError()
+        with patch('server.app.asyncio.wait_for', side_effect=timeout):
+            await bridge.wait_dm_ack(mid, Event(EventType.MSG_SENT, {'suggested_timeout': suggested}))
+    asyncio.run(scenario())
+
+
+def test_dm_ack_wakes_background_task(bridge):
+    async def scenario():
+        result = await bridge.send('dm', KEY, 'Wait')
+        task = bridge.pending_dms[result['id']]
+        await asyncio.sleep(0)
+        # A channel transmission can proceed while the DM waits for an ACK.
+        await bridge.send('channel', '0', 'Other message')
+        await bridge.on_event(Event(EventType.ACK, {'code': '1234abcd'}))
+        await asyncio.wait_for(task, .5)
+        bridge.radio.commands.send_msg.assert_awaited_once()
         assert bridge.store.history('dm', KEY[:12])[0]['status'] == 'delivered'
     asyncio.run(scenario())
 
@@ -497,6 +848,50 @@ def test_path_hash_saved_and_read_back(bridge, size):
     bridge.radio.commands.set_path_hash_mode.assert_awaited_once_with(size - 1)
     assert result['device']['path_hash_mode'] == size - 1
     assert bridge.ready
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_multi_acks_preserves_fresh_settings_and_reads_back(bridge, enabled):
+    from server.app import MultiAcksInput
+    info = {'multi_acks': int(not enabled), 'manual_add_contacts': True, 'adv_loc_policy': 2,
+            'telemetry_mode_base': 1, 'telemetry_mode_loc': 2, 'telemetry_mode_env': 3}
+    bridge.info = {**info, 'manual_add_contacts': False, 'telemetry_mode_loc': 0}
+    bridge.radio.commands.send_device_query = AsyncMock(return_value=Event(EventType.DEVICE_INFO, {'fw ver': 7}))
+    bridge.radio.commands.send_appstart.side_effect = [Event(EventType.SELF_INFO, info), Event(EventType.SELF_INFO, {**info, 'multi_acks': int(enabled)})]
+    bridge.radio.commands.set_other_params_from_infos = AsyncMock(return_value=Event(EventType.OK, {}))
+    result = asyncio.run(bridge.save_multi_acks(MultiAcksInput(enabled=enabled)))
+    bridge.radio.commands.set_other_params_from_infos.assert_awaited_once_with({**info, 'multi_acks': int(enabled)})
+    assert result['info']['multi_acks'] == int(enabled)
+    assert bridge.ready
+
+
+@pytest.mark.parametrize('failure', ['old_firmware', 'missing', 'mismatch', 'timeout', 'rejected'])
+def test_multi_acks_unavailable_or_unconfirmed(bridge, failure):
+    from server.app import MultiAcksInput
+    info = {'multi_acks': 0, 'manual_add_contacts': False, 'adv_loc_policy': 0,
+            'telemetry_mode_base': 0, 'telemetry_mode_loc': 0, 'telemetry_mode_env': 0}
+    if failure == 'missing':
+        del info['telemetry_mode_loc']
+    bridge.radio.commands.send_device_query = AsyncMock(return_value=Event(EventType.DEVICE_INFO, {'fw ver': 6 if failure == 'old_firmware' else 7}))
+    bridge.radio.commands.send_appstart.side_effect = [Event(EventType.SELF_INFO, info), TimeoutError() if failure == 'timeout' else Event(EventType.SELF_INFO, info)]
+    bridge.radio.commands.set_other_params_from_infos = AsyncMock(return_value=Event(EventType.ERROR if failure == 'rejected' else EventType.OK, {}))
+    with pytest.raises((HTTPException, RuntimeError, TimeoutError)):
+        asyncio.run(bridge.save_multi_acks(MultiAcksInput(enabled=True)))
+    if failure in ('old_firmware', 'missing'):
+        bridge.radio.commands.set_other_params_from_infos.assert_not_awaited()
+        assert bridge.ready
+    else:
+        assert not bridge.ready
+        assert 'multi_acks' not in bridge.info
+
+
+def test_multi_acks_api_validation_and_offline(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'acks.db'), autoconnect=False)) as client:
+        headers = {'X-Meshcore-Client': 'web'}
+        assert client.post('/api/multi-acks', json={'enabled': True}).status_code == 403
+        for invalid in [0, 1, 'true', None]:
+            assert client.post('/api/multi-acks', headers=headers, json={'enabled': invalid}).status_code == 422
+        assert client.post('/api/multi-acks', headers=headers, json={'enabled': True}).status_code == 409
 
 
 @pytest.mark.parametrize('failure', ['mismatch', 'timeout', 'rejected'])

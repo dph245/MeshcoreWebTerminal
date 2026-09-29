@@ -5,6 +5,8 @@ let messageRows = [], olderAvailable = false, connectionError = false;
 let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
 let channelSaving = false;
 let pathHashSaving = false, pathHashDirty = false;
+let multiAcksSaving = false, multiAcksDirty = false;
+let roomSaving = false;
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
@@ -19,6 +21,11 @@ async function api(path, body) {
   return result;
 }
 function contactName(key) { const found=Object.entries(state.contacts).find(([k])=>k.startsWith(key)); return found?.[1]?.adv_name || key; }
+function roomAuthor(key) {
+  if(!key) return 'Absender unbekannt';
+  const matches=Object.entries(state.contacts).filter(([k])=>k.startsWith(key));
+  return matches.length===1 ? `${matches[0][1].adv_name||key} · ${key}` : `Absender ${key}`;
+}
 function receptionLabel(reception) {
   if(!reception || !['flood','direct'].includes(reception.routing)) return 'Empfangspfad: nicht verfügbar';
   if(reception.routing==='direct') return 'Empfangspfad: Direct-Routing · Knotenfolge nicht übermittelt';
@@ -53,6 +60,15 @@ function renderNav() {
     b.append(node('span','contact-avatar',name.slice(0,2).toUpperCase()),node('span','nav-name',name)); b.onclick=()=>openChat(s); $('contacts').append(b);
   }
   if(!contacts.length) $('contacts').append(node('p','nav-empty','Chat-Kontakte erscheinen nach dem Verbinden.'));
+  const rooms=Object.entries(state.contacts).filter(([,c])=>c.type===3).sort((a,b)=>(a[1].adv_name||a[0]).localeCompare(b[1].adv_name||b[0]));
+  $('room-count').textContent=rooms.length;
+  $('rooms').replaceChildren();
+  for(const [key,c] of rooms) {
+    const s={kind:'room',target:key,name:c.adv_name||key,unknown:!!c.unknown};
+    const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':''));b.title=key;
+    b.append(node('span','','▤'),node('span','nav-name',s.name));b.onclick=()=>openChat(s);$('rooms').append(b);
+  }
+  if(!rooms.length) $('rooms').append(node('p','nav-empty','Keine Roomserver im Companion gespeichert.'));
   $('monitor-nav').classList.toggle('active',!selection);
 }
 function applyState(data) {
@@ -74,6 +90,7 @@ function applyState(data) {
   updateConnection(); renderNav(); renderChart(); if(!paused) renderEvents();
   renderScopes();
   renderPathHash();
+  renderMultiAcks();
   renderChannelManager();
   if(state.error) {connectionError=true;error(`Verbindung: ${state.error} · Erneuter Versuch erfolgt automatisch.`);}
   else if(connectionError) {connectionError=false;error(null);}
@@ -89,8 +106,35 @@ function updateConnection() {
   updateComposer();
   renderScopes();
   renderPathHash();
+  renderMultiAcks();
   renderChannelManager();
+  renderRoom();
 }
+function renderRoom() {
+  const visible=selection?.kind==='room';
+  $('room-login-form').hidden=!visible;
+  if(!visible)return;
+  const room=state.rooms?.[selection.target]||{}, online=backendOnline&&state.status==='connected';
+  const busy=roomSaving||room.status==='logging_in';
+  $('room-status').textContent={logging_in:'Anmeldung läuft …',logged_in:room.can_post?'Anmeldung bestätigt · Schreiben erlaubt':'Anmeldung bestätigt · Nur lesen',failed:'Anmeldung fehlgeschlagen',disconnected:'Nicht angemeldet'}[room.status]||'Nicht angemeldet';
+  $('room-password').disabled=!online||busy||selection.unknown;
+  $('room-login').disabled=!online||busy||room.pending_send||selection.unknown;
+  $('room-logout').disabled=!online||roomSaving||selection.unknown||!['logged_in','logging_in'].includes(room.status);
+  $('room-feedback').textContent=room.error||'';
+}
+$('room-login-form').onsubmit=async e=>{
+  e.preventDefault();if($('room-login').disabled)return;
+  const target=selection.target,password=$('room-password').value;
+  $('room-password').value='';roomSaving=true;renderRoom();error(null);
+  try{applyState(await api('/api/rooms/login',{target,password}));}
+  catch(e){error(e.message);}finally{roomSaving=false;renderRoom();updateComposer();}
+};
+$('room-logout').onclick=async()=>{
+  if($('room-logout').disabled)return;
+  const target=selection.target;roomSaving=true;renderRoom();error(null);
+  try{applyState(await api('/api/rooms/logout',{target}));}
+  catch(e){error(e.message);}finally{roomSaving=false;renderRoom();updateComposer();}
+};
 function renderChannelManager() {
   const online=backendOnline&&state.status==='connected';
   $('channel-capacity').textContent=`${state.channels.length} / ${state.device.max_channels??'—'} Plätze belegt`;
@@ -119,6 +163,23 @@ $('manage-channels').onclick=()=>{
   $('new-channel-name').focus({preventScroll:true});
 };
 $('add-channel-form').onsubmit=e=>{e.preventDefault();if(!channelSaving)changeChannel('/api/channels',{name:$('new-channel-name').value});};
+function renderMultiAcks() {
+  const value=state.info.multi_acks;
+  const supported=(state.device['fw ver']||0)>=7&&(value===0||value===1);
+  $('multi-acks-current').textContent=supported?(value===1?'Aktiv':'Aus'):'Nicht verfügbar';
+  if(!multiAcksDirty) $('multi-acks-enabled').checked=supported&&value===1;
+  for(const id of ['multi-acks-enabled','multi-acks-save']) $(id).disabled=!backendOnline||state.status!=='connected'||!supported||multiAcksSaving;
+}
+$('multi-acks-enabled').onchange=()=>{multiAcksDirty=true;$('multi-acks-feedback').textContent='';};
+$('multi-acks-form').onsubmit=async e=>{
+  e.preventDefault();if($('multi-acks-save').disabled)return;
+  multiAcksSaving=true;renderMultiAcks();$('multi-acks-feedback').textContent='Wird gespeichert …';
+  try{
+    const result=await api('/api/multi-acks',{enabled:$('multi-acks-enabled').checked});
+    multiAcksDirty=false;applyState(result);$('multi-acks-feedback').textContent='Im Companion gespeichert und bestätigt.';
+  }catch(e){$('multi-acks-feedback').textContent=e.message;}
+  finally{multiAcksSaving=false;renderMultiAcks();}
+};
 function renderPathHash() {
   const mode=state.device.path_hash_mode, supported=Number.isInteger(mode)&&mode>=0&&mode<=2;
   $('path-hash-current').textContent=supported?`${mode+1} Byte`:'Nicht verfügbar';
@@ -204,11 +265,12 @@ function rememberDraft() {if(selection) drafts.set(keyFor(selection),$('message-
 async function openChat(s) {
   rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;channelScopeDirty=false;
   $('channel-scope-feedback').textContent='';renderScopes();
+  $('room-password').value='';renderRoom();
   $('monitor').hidden=true;$('chat').hidden=false;
   $('breadcrumb-title').textContent=s.kind==='channel'?`# ${s.name.replace(/^#/,'')}`:s.name;
   $('chat-title').textContent=s.name;
   $('chat-icon').textContent=s.kind==='channel'?'#':s.name.slice(0,2).toUpperCase();
-  $('chat-subtitle').textContent=s.kind==='channel'?'Channel · Nachrichten über dein Mesh':s.unknown?'Unbekannter Absender · zum Antworten zuerst im Companion speichern':`Direktnachricht · ${s.target.slice(0,12)}`;
+  $('chat-subtitle').textContent=s.kind==='channel'?'Channel · Nachrichten über dein Mesh':s.unknown?'Unbekannter Absender · zum Antworten zuerst im Companion speichern':`${s.kind==='room'?'Roomserver':'Direktnachricht'} · ${s.target.slice(0,12)}`;
   $('message-text').value=drafts.get(keyFor(s))||'';
   $('messages').replaceChildren(node('p','nav-empty','Nachrichten werden geladen …'));
   renderNav();updateComposer();await loadMessages();
@@ -231,9 +293,10 @@ async function loadMessages(before=null) {
     if(!messageRows.length){const empty=node('div','empty-state');empty.append(node('span','empty-symbol',selection.kind==='channel'?'#':'↗'),node('h3','','Hier beginnt das Gespräch'),node('p','','Neue Nachrichten werden lokal gespeichert. Bereits im Companion vorhandene Nachrichten werden beim Verbinden abgeholt.'));fragment.append(empty);}
     for(const message of messageRows) {
       const wrap=node('article',`message ${message.direction}`);
-      const labels={received:'Empfangen',sent:selection.kind==='dm'?'An Companion übergeben · unbestätigt':'An Companion übergeben',delivered:'Zugestellt ✓'};
+      const labels={received:'Empfangen',sent:selection.kind==='dm'?'An Companion übergeben · unbestätigt':'An Companion übergeben',delivered:'Zugestellt ✓',sending:`${message.tx_route==='flood'?'FLOOD':'DIRECT'} · Versuch ${message.tx_attempt}/3 · Warte auf Bestätigung`,unconfirmed:'Keine Zustellbestätigung · Versuche ausgeschöpft',interrupted:'Unbestätigt · Sendeversuche abgebrochen'};
+      if(selection.kind==='room')labels.delivered='Vom Roomserver angenommen ✓';
       if(message.direction==='out'&&selection.kind==='channel'&&message.repeater_count>0) labels.sent=`von ${message.repeater_count} ${message.repeater_count===1?'Repeater':'Repeatern'} empfangen`;
-      const sender=message.direction==='out'?'Du':selection.kind==='dm'?contactName(message.target):selection.name;
+      const sender=message.direction==='out'?'Du':selection.kind==='room'?roomAuthor(message.sender_key):selection.kind==='dm'?contactName(message.target):selection.name;
       wrap.append(node('div','bubble',message.text));
       if(message.direction==='in') wrap.append(node('div','message-path',receptionLabel(message.reception)));
       if(message.direction==='in'&&selection.kind==='channel') {
@@ -252,10 +315,11 @@ async function loadMessages(before=null) {
 }
 function updateComposer() {
   const length=encoder.encode($('message-text').value.trim()).length;
-  const limit=selection?.kind==='channel'&&state.info.name?Math.max(0,160-encoder.encode(`${state.info.name}: `).length):160;
+  const limit=selection?.kind==='room'?150:selection?.kind==='channel'&&state.info.name?Math.max(0,160-encoder.encode(`${state.info.name}: `).length):160;
   $('message-counter').textContent=`${length} / ${limit} Bytes`;
   $('message-counter').classList.toggle('danger',length>limit);
-  $('send').disabled=sending||scopeSaving||channelSaving||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>limit;
+  const roomBlocked=selection?.kind==='room'&&(!state.rooms?.[selection.target]?.can_post||state.rooms?.[selection.target]?.pending_send||roomSaving);
+  $('send').disabled=sending||scopeSaving||channelSaving||roomBlocked||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>limit;
   $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
 }
 $('monitor-nav').onclick=()=>{rememberDraft();selection=null;historyVersion++;$('monitor').hidden=false;$('chat').hidden=true;$('breadcrumb-title').textContent='Netzmonitor';renderNav();};

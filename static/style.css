@@ -231,3 +231,7 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 @media (pointer: coarse) {
   .button, .nav-item, select, .scope-fields input { min-height: 44px; }
 }
+.sidebar #rooms { flex-shrink: 0; }
+@media(max-width:700px){.sidebar #rooms:before{content:'ROOMSERVER';display:block;font:11px var(--mono);color:var(--muted);margin:3px 8px}}
+.scope-fields .ack-toggle{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text)}
+.scope-fields .ack-toggle input{min-width:20px;min-height:20px;width:20px;height:20px;flex:none;accent-color:var(--accent)}
