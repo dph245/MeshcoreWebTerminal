@@ -250,6 +250,7 @@ class Bridge:
         self.error = None
         self.channels = store.get_meta("channels", [])
         self.contacts = store.get_meta("contacts", {})
+        self.discovered = store.get_meta("discovered", {})
         self.info = {}
         self.device = {}
         self.stats = {}
@@ -273,7 +274,7 @@ class Bridge:
 
     def snapshot(self):
         return public(dict(status=self.status, error=self.error, host=self.host, port=self.port,
-                           channels=self.channels, contacts=self.contacts, info=self.info,
+                           channels=self.channels, contacts=self.contacts, discovered=self.discovered, info=self.info,
                            device=self.device, stats=self.stats, events=list(self.events),
                            rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
                            scopes={"default": self.default_scope, "supported": self.scope_supported,
@@ -305,6 +306,8 @@ class Bridge:
     async def on_event(self, event):
         p = public(event.payload or {})
         name = event.type.name
+        if name in ("DISCOVER_RESPONSE", "ADVERTISEMENT", "NEW_CONTACT") or (name == "RX_LOG_DATA" and p.get("payload_type") == 4):
+            self.remember_discovery(name, p)
         if name == "SELF_INFO":
             self.info = p
         elif name == "DEVICE_INFO":
@@ -376,12 +379,76 @@ class Bridge:
                 task.cancel()
             self.status = "reconnecting" if self.desired else "offline"
             self.changed()
-        elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "PATH_UPDATE", "TRACE_DATA"):
+        elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "PATH_UPDATE", "TRACE_DATA", "DISCOVER_RESPONSE"):
             if name == "RX_LOG_DATA" and (echo := repeater_echo(p)):
                 self.recent_echoes.append(echo)
                 if self.store.record_repeater(*echo):
                     self.emit("message", {"repeater_echo": True})
             self.log(name, p)
+
+    def remember_discovery(self, name, payload):
+        key = payload.get("public_key") or payload.get("pubkey") or payload.get("adv_key")
+        if not isinstance(key, str) or len(key) not in (16, 64) or any(c not in "0123456789abcdefABCDEF" for c in key):
+            return
+        key = key.lower()
+        now = time.time()
+        entry = self.discovered.setdefault(key, {"public_key": key, "first_seen": now, "sources": []})
+        source = "DISCOVER" if name == "DISCOVER_RESPONSE" else "ADVERT"
+        if source not in entry["sources"]:
+            entry["sources"].append(source)
+        entry["last_seen"] = now
+        entry.setdefault("observations", {})[name] = {"time": now, "payload": payload}
+        contact = {**self.contacts.get(key, {}), **(entry.get("contact") or {})}
+        if name == "NEW_CONTACT":
+            contact.update(payload)
+        else:
+            for field in ("adv_name", "adv_lat", "adv_lon"):
+                if payload.get(field) is not None:
+                    contact[field] = payload[field]
+            if isinstance(payload.get("adv_timestamp"), int):
+                contact["last_advert"] = payload["adv_timestamp"]
+            kind = payload.get("node_type", payload.get("adv_type"))
+            if kind in (1, 2, 3, 4):
+                contact["type"] = kind
+        contact["public_key"] = key
+        entry["contact"] = contact
+        self.store.set_meta("discovered", self.discovered)
+        self.changed()
+
+    async def discover(self):
+        async with self.lock:
+            self.require_ready()
+            await self.command("send_node_discover_req", 0x1E, False)
+            self.log("DISCOVER_SENT", {})
+            return self.snapshot()
+
+    async def save_discovered(self, key):
+        async with self.lock:
+            self.require_ready()
+            entry = self.discovered.get(key)
+            if not entry:
+                raise HTTPException(404, "Gerät nicht in der Fundliste.")
+            # Read first: never overwrite a contact's flags or route with discovery data.
+            result = await self.command("get_contacts")
+            self.contacts = public(result.payload)
+            self.store.set_meta("contacts", self.contacts)
+            if key not in self.contacts:
+                contact = dict(entry.get("contact") or {})
+                if len(key) != 64 or contact.get("type") not in (1, 2, 3, 4):
+                    raise HTTPException(409, "Vollständiger Geräteschlüssel und Gerätetyp fehlen. Erneut DISCOVER senden oder ein ADVERT abwarten.")
+                defaults = {"flags": 0, "out_path": "", "out_path_len": -1, "out_path_hash_mode": 0,
+                            "last_advert": 0, "adv_lat": 0, "adv_lon": 0, "adv_name": key[:12]}
+                contact = {**defaults, **contact, "public_key": key}
+                contact["adv_name"] = contact["adv_name"].encode("utf-8")[:31].decode("utf-8", "ignore")
+                await self.command("add_contact", contact)
+                result = await self.command("get_contacts")
+                self.contacts = public(result.payload)
+                self.store.set_meta("contacts", self.contacts)
+                if key not in self.contacts:
+                    self.changed()
+                    raise HTTPException(502, "Kontaktübernahme vom Companion nicht bestätigt. Bitte aktualisieren.")
+            self.changed()
+            return self.snapshot()
 
     async def command(self, method, *args):
         result = await asyncio.wait_for(getattr(self.radio.commands, method)(*args), 10)
@@ -981,6 +1048,20 @@ def create_app(db_path=None, autoconnect=None):
             except (RuntimeError, TimeoutError) as exc:
                 raise HTTPException(502, str(exc) or "Companion-Timeout") from exc
         return bridge.snapshot()
+
+    @app.post("/api/discover")
+    async def discover(request: Request):
+        try:
+            return await request.app.state.bridge.discover()
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, f"DISCOVER nicht bestätigt: {str(exc) or 'Timeout'}") from exc
+
+    @app.post("/api/discovered/save")
+    async def save_discovered(request: Request, setting: RoomTarget):
+        try:
+            return await request.app.state.bridge.save_discovered(setting.target.lower())
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, "Kontaktübernahme unbestätigt. Bitte aktualisieren.") from exc
 
     @app.get("/api/messages")
     async def messages(request: Request, kind: Literal["channel", "dm", "room"], target: str, before: int | None = None):

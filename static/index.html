@@ -34,6 +34,13 @@
         <article class="metric"><span class="metric-label">EMPFANGENE PAKETE <span>↓</span></span><strong id="metric-rx">—</strong><small id="metric-rx-hint">Warte auf Funkstatistik</small></article>
         <article class="metric"><span class="metric-label">LETZTES SIGNAL <span>▥</span></span><strong id="metric-rssi">—</strong><small id="metric-snr">RSSI / SNR</small></article>
       </div>
+      <article class="panel discovery-panel">
+        <div class="panel-heading"><div class="inline-heading"><h2>Entdeckte Geräte</h2><span id="discovered-count" class="count">0</span></div><button id="discover" class="button">DISCOVER aussenden</button></div>
+        <p class="discovery-hint">DISCOVER-Antworten und empfangene ADVERTs bleiben hier auch nach einem Neustart gespeichert. Geräte kannst du bei Bedarf in die Kontakte des Companions übernehmen.</p>
+        <label class="search"><input id="discovered-search" placeholder="Name oder Geräteschlüssel suchen …" aria-label="Entdeckte Geräte suchen"></label>
+        <div id="discovered-list" class="managed-channels"></div>
+        <p id="discovery-feedback" class="channel-feedback" role="status"></p>
+      </article>
       <div class="monitor-grid">
         <article class="panel activity-panel"><div class="panel-heading"><h2>Live-Aktivität</h2><span class="pill">LETZTE 60 SEKUNDEN</span></div><div class="activity-chart" id="activity-chart" aria-label="Empfangene Funkpakete der letzten 60 Sekunden"></div><div class="chart-axis"><span>−60 s</span><span>−30 s</span><span>Jetzt</span></div><p class="chart-caption"><span class="legend-dot"></span> Empfangene Funkpakete · beobachtet in dieser Sitzung</p></article>
         <article class="panel radio-panel"><div class="panel-heading"><h2>Companion</h2><span class="pill">RADIO</span></div><dl id="radio-info"><div><dt>Adresse</dt><dd>192.168.88.14:5000</dd></div><div><dt>Gerät</dt><dd>Warte auf Verbindung</dd></div></dl><div class="radio-note">Der Monitor zeigt die vom Companion gemeldeten Pakete und Signalwerte.</div></article>

@@ -6,11 +6,11 @@ let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
 let channelSaving = false;
 let pathHashSaving = false, pathHashDirty = false;
 let multiAcksSaving = false, multiAcksDirty = false;
-let roomSaving = false;
+let roomSaving = false, discoveryBusy = false;
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
-const eventNames = {RX_LOG_DATA:'Funkpaket', RAW_DATA:'Rohdaten', ADVERTISEMENT:'Advertisement', NEW_CONTACT:'Neuer Kontakt', PATH_UPDATE:'Route aktualisiert', ACK:'Bestätigung', MESSAGE_SENT:'Nachricht gesendet', CHANNEL_MSG_RECV:'Channel-Nachricht', CONTACT_MSG_RECV:'Direktnachricht', CONNECTED:'Verbunden', CONNECTION_ERROR:'Verbindungsfehler', TRACE_DATA:'Route / Trace'};
+const eventNames = {DISCOVER_RESPONSE:'DISCOVER-Antwort', DISCOVER_SENT:'DISCOVER gesendet', RX_LOG_DATA:'Funkpaket', RAW_DATA:'Rohdaten', ADVERTISEMENT:'Advertisement', NEW_CONTACT:'Neuer Kontakt', PATH_UPDATE:'Route aktualisiert', ACK:'Bestätigung', MESSAGE_SENT:'Nachricht gesendet', CHANNEL_MSG_RECV:'Channel-Nachricht', CONTACT_MSG_RECV:'Direktnachricht', CONNECTED:'Verbunden', CONNECTION_ERROR:'Verbindungsfehler', TRACE_DATA:'Route / Trace'};
 const radioTypes = ['RX_LOG_DATA','RAW_DATA'];
 function node(tag, className, text) { const el = document.createElement(tag); if(className) el.className=className; if(text!==undefined) el.textContent=text; return el; }
 function error(message) { $('error').textContent=message || ''; $('error').hidden=!message; }
@@ -109,7 +109,49 @@ function updateConnection() {
   renderMultiAcks();
   renderChannelManager();
   renderRoom();
+  renderDiscoveries();
 }
+function renderDiscoveries() {
+  const connected=backendOnline&&state.status==='connected';
+  $('discover').disabled=!connected||discoveryBusy;
+  $('discover').textContent=discoveryBusy?'Bitte warten …':'DISCOVER aussenden';
+  const entries=Object.entries(state.discovered||{}).sort((a,b)=>b[1].last_seen-a[1].last_seen);
+  $('discovered-count').textContent=entries.length;
+  const search=$('discovered-search').value.toLowerCase();
+  const list=$('discovered-list');list.replaceChildren();
+  for(const [key,entry] of entries) {
+    const contact=entry.contact||{}, name=contact.adv_name||key.slice(0,16);
+    if(!`${name} ${key}`.toLowerCase().includes(search))continue;
+    const row=node('div','managed-channel'), details=node('span','discovery-details');
+    details.append(node('strong','',name),node('small','',key));
+    const type={1:'Chat',2:'Repeater',3:'Roomserver',4:'Sensor'}[contact.type]||'Typ unbekannt';
+    details.append(node('small','',`${type} · ${(entry.sources||[]).join(' + ')} · Zuletzt ${new Date(entry.last_seen*1000).toLocaleString('de-DE')}`));
+    const discovery=entry.observations?.DISCOVER_RESPONSE;
+    if(discovery) {
+      const snr=value=>Number.isFinite(value)?`${value.toLocaleString('de-DE')} dB`:'nicht verfügbar';
+      const signal=node('small','',`DISCOVER-SNR · Antwort bei dir: ${snr(discovery.payload?.SNR)} · Anfrage beim Gerät: ${snr(discovery.payload?.SNR_in)}`);
+      signal.title=`Letzte DISCOVER-Antwort: ${new Date(discovery.time*1000).toLocaleString('de-DE')}`;
+      details.append(signal);
+    }
+    const saved=state.contacts[key]&&!state.contacts[key].unknown;
+    const complete=key.length===64&&[1,2,3,4].includes(contact.type);
+    const button=node('button','button compact',saved?'Im Kontaktbuch':complete?'Als Kontakt speichern':'Warte auf vollständige Daten');
+    button.disabled=!!saved||!complete||!connected||discoveryBusy;
+    button.onclick=()=>discoveryAction('/api/discovered/save',{target:key},'Kontakt im Companion gespeichert und bestätigt.');
+    row.append(details,button);list.append(row);
+  }
+  if(!list.children.length)list.append(node('p','nav-empty',entries.length?'Keine passenden Geräte.':'Noch keine Geräte empfangen. DISCOVER senden oder ADVERTs abwarten.'));
+}
+async function discoveryAction(path, body, success) {
+  if(discoveryBusy)return;
+  discoveryBusy=true;renderDiscoveries();error(null);$('discovery-feedback').textContent='';
+  try {applyState(await api(path,body));$('discovery-feedback').textContent=success;}
+  catch(e){error(e.message);}
+  finally{discoveryBusy=false;renderDiscoveries();}
+}
+$('discover').onclick=()=>discoveryAction('/api/discover',{},'DISCOVER gesendet. Empfangene Antworten erscheinen automatisch in der Liste.');
+$('discovered-search').oninput=renderDiscoveries;
+
 function renderRoom() {
   const visible=selection?.kind==='room';
   $('room-login-form').hidden=!visible;

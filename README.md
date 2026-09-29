@@ -13,9 +13,18 @@ Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 - Schalter „Zusätzliches ACK senden“ im Netzmonitor: Companion-Einstellung mit bestätigtem Rücklesen, verfügbar ab Protokollversion 7. Sie verbessert Bestätigungen für eingehende DMs bei bekannter direkter Rückroute; für ausgehende DMs zählt die Einstellung der Gegenstelle. Zusätzliche ACKs benötigen mehr Funkzeit. Die Einstellung wird erst beim Speichern verändert; Kontakt-, Telemetrie- und Advert-Einstellungen werden vom Gerät frisch gelesen und beibehalten.
 - Live-Repeater-Zähler bei ausgehenden Channel-Nachrichten anhand zurückgehörter Weiterleitungen
 - Netzmonitor mit Live-Funkereignissen, RSSI/SNR, Gerätestatistik und Ereignisfiltern
+- DISCOVER aussenden, Antworten und ADVERTs dauerhaft sammeln und gefundene Geräte gezielt als Kontakt im Companion speichern
 - Automatische Neuverbindung; responsive deutsche Oberfläche
 - Standard-Scope im Companion und gespeicherte Scope-Auswahl pro Channel
 - Scope des Absenders in Channel-Funkpaket-Details: Transportcode-Abgleich mit den bekannten Standard- und Channel-Scope-Namen. Passende Namen sind Kandidaten (16-Bit-Kollisionen möglich); unbekannte Namen und Pakete ohne Scope werden ausdrücklich gekennzeichnet. Der Scope-Name selbst wird nicht mitgesendet. Normale Channel-Empfangsereignisse ohne Funkpaket-Header enthalten keinen Scope.
+
+## Geräte entdecken
+
+Im Netzmonitor sendet **DISCOVER aussenden** eine Anfrage für Chat-Geräte, Repeater, Roomserver und Sensoren. Antworten hängen von Gerätetyp, Firmware und Erreichbarkeit ab. Die Anfrage fordert vollständige Schlüssel an ([MeshCore-Protokoll](https://github.com/meshcore-dev/MeshCore/blob/main/docs/payloads.md#control-data)).
+
+**Entdeckte Geräte** sammelt DISCOVER-Antworten und ADVERTs automatisch in SQLite, unabhängig vom begrenzten Ereignisprotokoll. Pro Geräteschlüssel bleiben Quellen, erster/letzter Empfang, Kontaktdaten und die letzte Beobachtung je Ereignistyp erhalten. Bei DISCOVER-Antworten zeigt die Liste beide SNR-Werte in dB: den Empfang der Antwort beim eigenen Companion und den Empfang der Anfrage beim antwortenden Gerät. Fehlende Werte werden als nicht verfügbar angezeigt. Die Liste lässt sich nach Name oder Schlüssel durchsuchen und bleibt auch offline verfügbar.
+
+**Als Kontakt speichern** übernimmt ein Gerät in den Companion und liest das Kontaktbuch zur Bestätigung zurück. Bereits gespeicherte Kontakte werden nicht überschrieben. Ohne Advert-Namen wird zunächst der Schlüsselanfang als Name verwendet. Reine Schlüsselpräfixe oder Meldungen ohne Gerätetyp bleiben in der Fundliste, bis vollständige Daten vorliegen; Präfixe werden nicht automatisch einem vollständigen Schlüssel zugeordnet. Die Auto-Add-Einstellung des Companions bleibt unverändert. Repeater erscheinen in der Fundliste als gespeichert, Chat-Geräte und Roomserver zusätzlich in der jeweiligen Seitenleiste.
 
 ## Start mit Docker
 
@@ -93,6 +102,7 @@ Protokollgrundlagen: [Companion-Firmware](https://github.com/meshcore-dev/MeshCo
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest -q
 .venv/bin/python tests/browser_rooms.py
+.venv/bin/python tests/browser_discovery.py
 ```
 
 Die Tests verwenden einen simulierten Companion und senden nichts ins Funknetz. Sie prüfen Persistenz, Duplikaterkennung, Empfangsrouting, UTF-8-Grenzen, ACKs, Fehlerfälle und API-Schutz.

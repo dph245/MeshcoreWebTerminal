@@ -930,3 +930,79 @@ def test_path_hash_api_validation_and_offline(tmp_path):
         for invalid in [0, 4, -1, True, '2', 1.5, None]:
             assert client.post('/api/path-hash', json={'bytes': invalid}, headers=headers).status_code == 422
         assert client.post('/api/path-hash', json={'bytes': 2}, headers=headers).status_code == 409
+
+
+def test_discovery_persists_and_combines_sources(tmp_path):
+    path = str(tmp_path / 'discover.sqlite3')
+    store = Store(path)
+    b = Bridge(store, 'test', 5000)
+    async def scenario():
+        await b.on_event(Event(EventType.DISCOVER_RESPONSE, {'pubkey': KEY, 'node_type': 2, 'SNR': 5}))
+        await b.on_event(Event(EventType.NEW_CONTACT, {'public_key': KEY, 'type': 2, 'adv_name': 'Relay'}))
+        await b.on_event(Event(EventType.ADVERTISEMENT, {'public_key': KEY}))
+        await b.on_event(Event(EventType.DISCOVER_RESPONSE, {'pubkey': 'broken', 'node_type': 2}))
+    asyncio.run(scenario())
+    assert not b.contacts
+    assert len(b.discovered) == 1
+    assert b.discovered[KEY]['sources'] == ['DISCOVER', 'ADVERT']
+    assert b.discovered[KEY]['contact']['adv_name'] == 'Relay'
+    assert b.discovered[KEY]['observations']['DISCOVER_RESPONSE']['payload']['SNR'] == 5
+    store.db.close()
+    store = Store(path)
+    restored = Bridge(store, 'test', 5000)
+    assert restored.snapshot()['discovered'][KEY]['contact']['type'] == 2
+    store.db.close()
+
+
+def test_raw_advert_is_saved_without_using_rx_path_as_tx_route(bridge):
+    b = bridge
+    asyncio.run(b.on_event(Event(EventType.RX_LOG_DATA, {
+        'payload_type': 4, 'adv_key': ROOM, 'adv_type': 3, 'adv_name': 'Room',
+        'path': 'abcd', 'path_len': 2, 'adv_lat': 50, 'adv_lon': 8})))
+    contact = b.discovered[ROOM]['contact']
+    assert contact['adv_name'] == 'Room'
+    assert 'out_path' not in contact
+
+
+def test_discover_requests_full_keys_and_checks_connection(bridge):
+    b = bridge
+    b.radio.commands.send_node_discover_req = AsyncMock(return_value=Event(EventType.OK, {}))
+    asyncio.run(b.discover())
+    b.radio.commands.send_node_discover_req.assert_awaited_once_with(0x1E, False)
+    b.ready = False
+    with pytest.raises(HTTPException):
+        asyncio.run(b.discover())
+    assert b.radio.commands.send_node_discover_req.await_count == 1
+
+
+def test_save_discovery_confirms_contact_and_preserves_existing(bridge):
+    b = bridge
+    b.remember_discovery('DISCOVER_RESPONSE', {'pubkey': ROOM, 'node_type': 3})
+    commands = b.radio.commands
+    commands.get_contacts = AsyncMock(side_effect=[Event(EventType.CONTACTS, {}), Event(EventType.CONTACTS, {ROOM: {'type': 3}})])
+    commands.add_contact = AsyncMock(return_value=Event(EventType.OK, {}))
+    asyncio.run(b.save_discovered(ROOM))
+    saved = commands.add_contact.call_args.args[0]
+    assert saved['public_key'] == ROOM and saved['type'] == 3
+    assert saved['out_path_len'] == -1
+    assert ROOM in b.contacts
+    commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, {ROOM: {'flags': 7, 'adv_name': 'Custom'}}))
+    asyncio.run(b.save_discovered(ROOM))
+    assert commands.add_contact.await_count == 1
+    assert b.contacts[ROOM]['adv_name'] == 'Custom'
+
+
+@pytest.mark.parametrize('mode', ['prefix', 'missing_type', 'rejected', 'unconfirmed'])
+def test_discovery_incomplete_and_failed_imports(bridge, mode):
+    b = bridge
+    key = ROOM[:16] if mode == 'prefix' else ROOM
+    b.remember_discovery('DISCOVER_RESPONSE', {'pubkey': key, 'node_type': None if mode == 'missing_type' else 2})
+    commands = b.radio.commands
+    commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, {}))
+    commands.add_contact = AsyncMock(return_value=Event(EventType.ERROR if mode == 'rejected' else EventType.OK, {}))
+    with pytest.raises((HTTPException, RuntimeError)):
+        asyncio.run(b.save_discovered(key))
+    assert key not in b.contacts
+    assert key in b.discovered
+    if mode in ('prefix', 'missing_type'):
+        commands.add_contact.assert_not_awaited()
