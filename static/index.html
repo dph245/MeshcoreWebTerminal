@@ -17,6 +17,7 @@
     <div class="section-label">DIREKTNACHRICHTEN <span id="contact-count">0</span></div>
     <label class="search"><span>⌕</span><input id="contact-search" placeholder="Kontakte suchen …" aria-label="Kontakte suchen"></label>
     <div id="contacts" class="nav-list contacts"></div>
+    <button id="manage-contacts" class="button compact manage-contacts">Kontakte verwalten</button>
     <div class="section-label">ROOMSERVER <span id="room-count">0</span></div>
     <div id="rooms" class="nav-list"></div>
     <label class="theme-picker" for="theme-select"><span>Design</span><select id="theme-select"><option value="dark-green">Dark Green</option><option value="dark-blue">Dark Blue</option><option value="light">Light</option></select></label>
@@ -28,6 +29,19 @@
     <section id="monitor" class="monitor">
       <div class="page-heading"><div><h1>Netzmonitor</h1><p>Funkaktivität und Verbindungen direkt von deinem Companion.</p></div><button id="refresh" class="button">↻ &nbsp; Aktualisieren</button></div>
       <article id="channel-manager" class="panel channel-manager" hidden><div class="panel-heading"><h2>Hashtag-Channels</h2><span id="channel-capacity" class="pill"></span></div><form id="add-channel-form" class="scope-form"><label for="new-channel-name">Channel-Name</label><div class="scope-fields"><input id="new-channel-name" placeholder="#mein-channel" required maxlength="100" autocomplete="off"><button id="add-channel" type="submit" class="button">Im Companion hinzufügen</button></div><p>Hashtag-Channels werden mit dem aus ihrem Namen abgeleiteten Schlüssel auf dem Companion gespeichert. Groß- und Kleinschreibung bleibt erhalten.</p></form><div id="managed-channels" class="managed-channels"></div><p id="channel-feedback" class="channel-feedback" role="status"></p></article>
+      <article id="contact-manager" class="panel channel-manager" hidden>
+        <div class="panel-heading"><h2>Kontakte verwalten</h2><span id="managed-contact-count" class="count">0</span></div>
+        <form id="add-contact-form" class="scope-form">
+          <label for="new-contact-name">Name</label>
+          <div class="scope-fields"><input id="new-contact-name" required maxlength="31" placeholder="Name · maximal 31 UTF-8-Bytes" autocomplete="off"><select id="new-contact-type" aria-label="Gerätetyp"><option value="1">Chat</option><option value="2">Repeater</option><option value="3">Roomserver</option><option value="4">Sensor</option></select></div>
+          <label for="new-contact-key">Öffentlicher Geräteschlüssel</label>
+          <div class="scope-fields"><input id="new-contact-key" required minlength="64" maxlength="64" pattern="[0-9a-fA-F]{64}" placeholder="64 Hex-Zeichen" autocomplete="off" spellcheck="false"><button id="add-contact" type="submit" class="button">Kontakt hinzufügen</button></div>
+          <p>Kontakte werden im Companion gespeichert. Beim Löschen bleiben Nachrichtenverläufe und entdeckte Geräte erhalten. Wenn Auto-Add am Companion aktiv ist, kann ein späteres ADVERT den Kontakt erneut hinzufügen.</p>
+        </form>
+        <label class="search contact-manager-search"><input id="managed-contact-search" placeholder="Name oder Geräteschlüssel suchen …" aria-label="Gespeicherte Kontakte suchen"></label>
+        <div id="managed-contacts" class="managed-channels"></div>
+        <p id="contact-feedback" class="channel-feedback" role="status"></p>
+      </article>
       <div class="metrics">
         <article class="metric"><span class="metric-label">VERBINDUNG <span>↗</span></span><strong id="metric-status">Offline</strong><small id="metric-endpoint">TCP · 192.168.88.14:5000</small></article>
         <article class="metric"><span class="metric-label">KONTAKTE <span>♧</span></span><strong id="metric-contacts">—</strong><small>Im Companion gespeichert</small></article>

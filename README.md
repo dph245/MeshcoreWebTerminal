@@ -3,6 +3,7 @@
 Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 
 - Vorhandene Channels und Chat-Kontakte vom Companion laden
+- Kontaktverwaltung: Kontakte mit Name, Gerätetyp und vollständigem öffentlichen Schlüssel manuell hinzufügen oder vom Companion löschen; Änderungen werden zurückgelesen und bestätigt
 - Hashtag-Channels im Companion hinzufügen und entfernen, einschließlich Rückleseprüfung
 - Channel-Nachrichten und Direktnachrichten empfangen und senden
 - Roomserver: Passwort-Anmeldung, Lese-/Schreibberechtigungen, eigene Verläufe mit Absenderkennung und bestätigtem Beitragsversand
@@ -17,6 +18,12 @@ Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 - Automatische Neuverbindung; responsive deutsche Oberfläche
 - Standard-Scope im Companion und gespeicherte Scope-Auswahl pro Channel
 - Scope des Absenders in Channel-Funkpaket-Details: Transportcode-Abgleich mit den bekannten Standard- und Channel-Scope-Namen. Passende Namen sind Kandidaten (16-Bit-Kollisionen möglich); unbekannte Namen und Pakete ohne Scope werden ausdrücklich gekennzeichnet. Der Scope-Name selbst wird nicht mitgesendet. Normale Channel-Empfangsereignisse ohne Funkpaket-Header enthalten keinen Scope.
+
+## Kontakte verwalten
+
+Über **Kontakte verwalten** in der Seitenleiste öffnest du die Kontaktliste im Netzmonitor. Zum Hinzufügen brauchst du einen Namen (maximal 31 UTF-8-Bytes), den Gerätetyp (Chat, Repeater, Roomserver oder Sensor) und den vollständigen öffentlichen Schlüssel (64 Hex-Zeichen). Vorhandene Schlüssel werden abgewiesen, damit ein bestehender Kontakt nicht versehentlich überschrieben wird.
+
+Die durchsuchbare Liste zeigt alle gespeicherten Gerätetypen und bietet **Löschen** an. Beide Aktionen benötigen eine Verbindung zum Companion und prüfen das Ergebnis durch erneutes Auslesen. Ein laufender Nachrichtenversand oder eine Roomserver-Anmeldung muss vor dem Löschen abgeschlossen sein. Nachrichtenverläufe und Fundliste bleiben erhalten; nach erneutem Hinzufügen desselben Schlüssels ist der Verlauf wieder erreichbar. Die Auto-Add-Einstellung des Companions kann Kontakte bei späteren ADVERTs erneut hinzufügen.
 
 ## Geräte entdecken
 
@@ -103,6 +110,7 @@ Protokollgrundlagen: [Companion-Firmware](https://github.com/meshcore-dev/MeshCo
 .venv/bin/python -m pytest -q
 .venv/bin/python tests/browser_rooms.py
 .venv/bin/python tests/browser_discovery.py
+.venv/bin/python tests/browser_contacts.py
 ```
 
 Die Tests verwenden einen simulierten Companion und senden nichts ins Funknetz. Sie prüfen Persistenz, Duplikaterkennung, Empfangsrouting, UTF-8-Grenzen, ACKs, Fehlerfälle und API-Schutz.

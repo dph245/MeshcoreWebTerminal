@@ -3,7 +3,7 @@ const state = { status: 'offline', channels: [], contacts: {}, events: [], stats
 let selection = null, paused = false, sending = false, backendOnline = false, historyVersion = 0;
 let messageRows = [], olderAvailable = false, connectionError = false;
 let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
-let channelSaving = false;
+let channelSaving = false, contactSaving = false;
 let pathHashSaving = false, pathHashDirty = false;
 let multiAcksSaving = false, multiAcksDirty = false;
 let roomSaving = false, discoveryBusy = false;
@@ -73,6 +73,10 @@ function renderNav() {
 }
 function applyState(data) {
   Object.assign(state,data); backendOnline=true;
+  if(selection && ['dm','room'].includes(selection.kind) && !state.contacts[selection.target]) {
+    rememberDraft();selection=null;historyVersion++;messageRows=[];
+    $('chat').hidden=true;$('monitor').hidden=false;$('breadcrumb-title').textContent='Netzmonitor';
+  }
   if(selection?.kind==='channel'&&!state.channels.some(c=>String(c.index)===selection.target&&c.name===selection.name)) {
     drafts.delete(keyFor(selection));selection=null;historyVersion++;messageRows=[];
     $('chat').hidden=true;$('monitor').hidden=false;$('breadcrumb-title').textContent='Netzmonitor';
@@ -110,6 +114,7 @@ function updateConnection() {
   renderChannelManager();
   renderRoom();
   renderDiscoveries();
+  renderContactManager();
 }
 function renderDiscoveries() {
   const connected=backendOnline&&state.status==='connected';
@@ -177,6 +182,49 @@ $('room-logout').onclick=async()=>{
   try{applyState(await api('/api/rooms/logout',{target}));}
   catch(e){error(e.message);}finally{roomSaving=false;renderRoom();updateComposer();}
 };
+function renderContactManager() {
+  const online=backendOnline&&state.status==='connected';
+  for(const id of ['new-contact-name','new-contact-key','new-contact-type','add-contact']) $(id).disabled=!online||contactSaving;
+  const contacts=Object.entries(state.contacts).filter(([key,c])=>key.length===64&&!c.unknown)
+    .sort((a,b)=>(a[1].adv_name||a[0]).localeCompare(b[1].adv_name||b[0]));
+  $('managed-contact-count').textContent=contacts.length;
+  const search=$('managed-contact-search').value.toLowerCase(), list=$('managed-contacts');
+  list.replaceChildren();
+  for(const [key,c] of contacts) {
+    const name=c.adv_name||key.slice(0,16);
+    if(!`${name} ${key}`.toLowerCase().includes(search))continue;
+    const row=node('div','managed-channel'), details=node('span','discovery-details');
+    details.append(node('strong','',name),node('small','',key),node('small','',{1:'Chat',2:'Repeater',3:'Roomserver',4:'Sensor'}[c.type]||'Typ unbekannt'));
+    const remove=node('button','button compact','Löschen');
+    remove.type='button';remove.disabled=!online||contactSaving;
+    remove.setAttribute('aria-label',`${name} vom Companion löschen`);
+    remove.onclick=()=>changeContact('/api/contacts/remove',{target:key});
+    row.append(details,remove);list.append(row);
+  }
+  if(!list.children.length)list.append(node('p','nav-empty',contacts.length?'Keine passenden Kontakte.':'Keine gespeicherten Kontakte vorhanden.'));
+}
+async function changeContact(path, body) {
+  if(contactSaving)return;
+  contactSaving=true;renderContactManager();$('contact-feedback').textContent='Companion wird aktualisiert …';
+  try {
+    applyState(await api(path,body));
+    if(path==='/api/contacts')$('add-contact-form').reset();
+    $('contact-feedback').textContent=path==='/api/contacts'?'Kontakt im Companion gespeichert und bestätigt.':'Kontakt gelöscht und bestätigt. Der Nachrichtenverlauf bleibt erhalten.';
+  } catch(e) {$('contact-feedback').textContent=e.message;}
+  finally {contactSaving=false;renderContactManager();}
+}
+$('manage-contacts').onclick=()=>{
+  $('monitor-nav').click();$('contact-manager').hidden=false;$('contact-manager').scrollIntoView({behavior:'smooth',block:'start'});
+  $('new-contact-name').focus({preventScroll:true});
+};
+$('managed-contact-search').oninput=renderContactManager;
+$('add-contact-form').onsubmit=e=>{
+  e.preventDefault();if($('add-contact').disabled)return;
+  const name=$('new-contact-name').value.trim();
+  if(!name||encoder.encode(name).length>31){$('contact-feedback').textContent='Der Name muss 1–31 UTF-8-Bytes lang sein.';return;}
+  changeContact('/api/contacts',{target:$('new-contact-key').value.trim(),name,type:Number($('new-contact-type').value)});
+};
+
 function renderChannelManager() {
   const online=backendOnline&&state.status==='connected';
   $('channel-capacity').textContent=`${state.channels.length} / ${state.device.max_channels??'—'} Plätze belegt`;

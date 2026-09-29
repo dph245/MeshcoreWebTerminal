@@ -456,6 +456,48 @@ class Bridge:
             raise RuntimeError(f"{method}: {public(result.payload) if result else 'Keine Antwort vom Companion'}")
         return result
 
+    async def read_contacts(self):
+        result = await self.command("get_contacts")
+        self.contacts = public(result.payload)
+        self.store.set_meta("contacts", self.contacts)
+        self.changed()
+
+    async def change_contact(self, setting, remove=False):
+        key = setting.target.lower()
+        if not remove:
+            name = setting.name.strip()
+            if not name or len(name.encode("utf-8")) > 31 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+                raise HTTPException(422, "Der Name muss 1–31 UTF-8-Bytes lang sein und darf keine Steuerzeichen enthalten.")
+        async with self.lock:
+            self.require_ready()
+            await self.read_contacts()
+            if remove:
+                # Keep retries and room login callbacks from using a deleted contact.
+                pending = self.store.db.execute(
+                    "SELECT 1 FROM messages WHERE target=? AND direction='out' AND status='sending' LIMIT 1",
+                    (key[:12],)).fetchone()
+                if pending or self.rooms.get(key, {}).get("status") == "logging_in":
+                    raise HTTPException(409, "Bitte den laufenden Versand oder die Roomserver-Anmeldung abwarten.")
+                if key in self.contacts:
+                    await self.command("remove_contact", key)
+                await self.read_contacts()
+                if key in self.contacts:
+                    raise HTTPException(502, "Löschen vom Companion nicht bestätigt. Bitte aktualisieren.")
+                self.rooms.pop(key, None)
+            else:
+                if key in self.contacts:
+                    raise HTTPException(409, "Dieser Geräteschlüssel ist bereits im Kontaktbuch gespeichert.")
+                contact = {"public_key": key, "adv_name": name, "type": setting.type,
+                           "flags": 0, "out_path": "", "out_path_len": -1, "out_path_hash_mode": 0,
+                           "last_advert": 0, "adv_lat": 0, "adv_lon": 0}
+                await self.command("add_contact", contact)
+                await self.read_contacts()
+                saved = self.contacts.get(key, {})
+                if saved.get("adv_name") != name or saved.get("type") != setting.type:
+                    raise HTTPException(502, "Kontakt vom Companion nicht wie angefordert bestätigt. Bitte aktualisieren.")
+            self.changed()
+            return self.snapshot()
+
     async def refresh_locked(self):
         await self.read_device()
         await self.read_self_info()
@@ -949,6 +991,11 @@ class RoomTarget(BaseModel):
     target: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 
+class ContactInput(RoomTarget):
+    name: str = Field(min_length=1, max_length=100)
+    type: int = Field(strict=True, ge=1, le=4)
+
+
 class RoomLogin(RoomTarget):
     password: SecretStr = SecretStr("")
 
@@ -1062,6 +1109,20 @@ def create_app(db_path=None, autoconnect=None):
             return await request.app.state.bridge.save_discovered(setting.target.lower())
         except (RuntimeError, TimeoutError, ConnectionError) as exc:
             raise HTTPException(502, "Kontaktübernahme unbestätigt. Bitte aktualisieren.") from exc
+
+    async def contact_change(request, setting, remove=False):
+        try:
+            return await request.app.state.bridge.change_contact(setting, remove)
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, "Kontaktänderung unbestätigt. Bitte aktualisieren.") from exc
+
+    @app.post("/api/contacts")
+    async def add_contact(request: Request, setting: ContactInput):
+        return await contact_change(request, setting)
+
+    @app.post("/api/contacts/remove")
+    async def remove_contact(request: Request, setting: RoomTarget):
+        return await contact_change(request, setting, True)
 
     @app.get("/api/messages")
     async def messages(request: Request, kind: Literal["channel", "dm", "room"], target: str, before: int | None = None):

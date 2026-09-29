@@ -1006,3 +1006,80 @@ def test_discovery_incomplete_and_failed_imports(bridge, mode):
     assert key in b.discovered
     if mode in ('prefix', 'missing_type'):
         commands.add_contact.assert_not_awaited()
+
+
+def test_manual_contact_add_and_duplicate_protection(bridge):
+    from server.app import ContactInput
+    b = bridge
+    saved = {'public_key': ROOM, 'adv_name': 'Mein Room', 'type': 3}
+    b.radio.commands.get_contacts = AsyncMock(side_effect=[Event(EventType.CONTACTS, {}), Event(EventType.CONTACTS, {ROOM: saved})])
+    b.radio.commands.add_contact = AsyncMock(return_value=Event(EventType.OK, {}))
+    setting = ContactInput(target=ROOM.upper(), name='  Mein Room  ', type=3)
+    asyncio.run(b.change_contact(setting))
+    sent = b.radio.commands.add_contact.call_args.args[0]
+    assert sent['public_key'] == ROOM and sent['adv_name'] == 'Mein Room'
+    assert sent['out_path_len'] == -1 and sent['flags'] == 0
+    assert b.store.get_meta('contacts', {})[ROOM] == saved
+    b.radio.commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, {ROOM: saved}))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(b.change_contact(setting))
+    assert exc.value.status_code == 409
+    assert b.radio.commands.add_contact.await_count == 1
+
+
+def test_remove_contact_preserves_history_and_discovery(bridge):
+    from server.app import RoomTarget
+    b = bridge
+    b.store.save('dm', KEY[:12], 'in', 'Keep me', 123, 'received')
+    b.remember_discovery('DISCOVER_RESPONSE', {'pubkey': KEY, 'node_type': 1})
+    b.rooms[KEY] = {'status': 'logged_in', 'can_post': True}
+    b.radio.commands.get_contacts = AsyncMock(side_effect=[Event(EventType.CONTACTS, b.contacts.copy()), Event(EventType.CONTACTS, {})])
+    b.radio.commands.remove_contact = AsyncMock(return_value=Event(EventType.OK, {}))
+    asyncio.run(b.change_contact(RoomTarget(target=KEY), remove=True))
+    b.radio.commands.remove_contact.assert_awaited_once_with(KEY)
+    assert not b.contacts and not b.store.get_meta('contacts', {})
+    assert KEY not in b.rooms and KEY in b.discovered
+    assert b.store.history('dm', KEY[:12])[0]['text'] == 'Keep me'
+
+
+@pytest.mark.parametrize('busy', ['message', 'login'])
+def test_remove_contact_rejects_active_operations(bridge, busy):
+    from server.app import RoomTarget
+    b = bridge
+    if busy == 'message':
+        b.store.save('dm', KEY[:12], 'out', 'Sending', 123, 'sending')
+    else:
+        b.rooms[KEY] = {'status': 'logging_in'}
+    b.radio.commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, b.contacts.copy()))
+    b.radio.commands.remove_contact = AsyncMock()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(b.change_contact(RoomTarget(target=KEY), remove=True))
+    assert exc.value.status_code == 409
+    b.radio.commands.remove_contact.assert_not_awaited()
+
+
+@pytest.mark.parametrize('remove', [True, False])
+@pytest.mark.parametrize('failure', ['rejected', 'readback'])
+def test_contact_mutation_failure_is_not_reported_as_success(bridge, remove, failure):
+    from server.app import ContactInput
+    b = bridge
+    before = b.contacts.copy() if remove else {}
+    b.radio.commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, before))
+    mutation = AsyncMock(return_value=Event(EventType.ERROR if failure == 'rejected' else EventType.OK, {}))
+    setattr(b.radio.commands, 'remove_contact' if remove else 'add_contact', mutation)
+    with pytest.raises((HTTPException, RuntimeError)):
+        asyncio.run(b.change_contact(ContactInput(target=KEY, name='Name', type=1), remove))
+    assert b.contacts == before
+
+
+def test_contact_api_validation_and_offline_guard(tmp_path):
+    with TestClient(create_app(str(tmp_path / 'contacts.db'), autoconnect=False)) as client:
+        headers = {'X-Meshcore-Client': 'web'}
+        valid = {'target': KEY, 'name': 'Test', 'type': 1}
+        assert client.post('/api/contacts', json=valid).status_code == 403
+        for updates in ({'target': KEY[:12]}, {'target': 'z' * 64}, {'name': ' '},
+                        {'name': 'a\x00b'}, {'name': 'ü' * 16}, {'type': 0}, {'type': True}):
+            assert client.post('/api/contacts', json={**valid, **updates}, headers=headers).status_code == 422
+        assert client.post('/api/contacts', json=valid, headers=headers).status_code == 409
+        assert client.post('/api/contacts/remove', json={'target': KEY}, headers=headers).status_code == 409
+        assert client.post('/api/contacts/remove', json={'target': KEY[:12]}, headers=headers).status_code == 422
