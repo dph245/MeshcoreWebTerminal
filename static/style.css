@@ -317,3 +317,9 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 
 .event-panel .empty-state { align-items: flex-start; text-align: left; padding: 12px 8px; }
 .event-panel .empty-state p { max-width: none; }
+
+.repeater-panel { margin-top: 10px; }
+.repeater-replies { margin: 0 0 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); color: var(--text); }
+.repeater-panel .scope-fields input#repeater-command { max-width: 640px; font-family: var(--mono); }
+.repeater-panel select { max-width: 100%; }
+.repeater-panel a { text-decoration: underline; }

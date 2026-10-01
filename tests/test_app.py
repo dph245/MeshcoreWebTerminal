@@ -1083,3 +1083,60 @@ def test_contact_api_validation_and_offline_guard(tmp_path):
         assert client.post('/api/contacts', json=valid, headers=headers).status_code == 409
         assert client.post('/api/contacts/remove', json={'target': KEY}, headers=headers).status_code == 409
         assert client.post('/api/contacts/remove', json={'target': KEY[:12]}, headers=headers).status_code == 422
+
+
+def test_repeater_cli_login_reply_and_disconnect(bridge):
+    b = bridge
+    b.contacts[KEY]['type'] = 2
+    b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000}))
+    b.radio.commands.send_cmd = AsyncMock(return_value=Event(EventType.MSG_SENT, {}))
+    b.radio.commands.send_logout = AsyncMock(return_value=Event(EventType.OK, {}))
+
+    async def scenario():
+        with pytest.raises(HTTPException) as exc:
+            await b.repeater_action(KEY, 'command', 'get name')
+        assert exc.value.status_code == 409
+        await b.repeater_action(KEY, 'login', 'secret')
+        assert 'secret' not in str(b.snapshot())
+        await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': ROOM[:12]}))
+        assert b.repeaters[KEY]['status'] == 'logging_in'
+        await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': KEY[:12]}))
+        assert b.repeaters[KEY]['status'] == 'logged_in'
+        assert not b.repeater_login_tasks
+        await b.repeater_action(KEY, 'command', 'get name')
+        b.radio.commands.send_cmd.assert_awaited_once_with(b.contacts[KEY], 'get name')
+        await b.on_event(Event(EventType.CONTACT_MSG_RECV, {'pubkey_prefix': KEY[:12], 'txt_type': 1, 'text': '<Repeater>'}))
+        assert b.repeaters[KEY]['replies'][0]['text'] == '<Repeater>'
+        assert not b.store.history('dm', KEY[:12], None)
+        assert all(e['type'] != 'CONTACT_MSG_RECV' for e in b.events)
+        b.invalidate_rooms()
+        assert b.repeaters[KEY]['status'] == 'disconnected'
+        await b.repeater_action(KEY, 'logout')
+        assert not b.repeaters[KEY]['replies']
+    asyncio.run(scenario())
+
+
+def test_repeater_cli_validation_and_failure(bridge):
+    b = bridge
+    async def scenario():
+        with pytest.raises(HTTPException) as exc:
+            await b.repeater_action(KEY, 'login', '')
+        assert exc.value.status_code == 404
+        b.contacts[KEY]['type'] = 2
+        for action, value in [('login', 'ä' * 8), ('login', '\x00'), ('command', 'get name\nreboot'), ('command', 'ä' * 81), ('command', ' ')]:
+            with pytest.raises(HTTPException) as exc:
+                await b.repeater_action(KEY, action, value)
+            assert exc.value.status_code == 422
+        b.radio.commands.send_login = AsyncMock(side_effect=RuntimeError('secret'))
+        with pytest.raises(HTTPException) as exc:
+            await b.repeater_action(KEY, 'login', 'secret')
+        assert 'secret' not in str(exc.value)
+        assert b.repeaters[KEY]['status'] == 'failed'
+        b.repeaters[KEY]['status'] = 'logging_in'
+        await b.repeater_login_expiry(KEY, 0)
+        assert b.repeaters[KEY]['status'] == 'timeout'
+        b.ready = False
+        with pytest.raises(HTTPException) as exc:
+            await b.repeater_action(KEY, 'login', '')
+        assert exc.value.status_code == 409
+    asyncio.run(scenario())

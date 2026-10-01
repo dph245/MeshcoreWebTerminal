@@ -6,7 +6,7 @@ let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
 let channelSaving = false, contactSaving = false;
 let pathHashSaving = false, pathHashDirty = false;
 let multiAcksSaving = false, multiAcksDirty = false;
-let roomSaving = false, discoveryBusy = false;
+let roomSaving = false, discoveryBusy = false, repeaterBusy = false;
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
@@ -115,6 +115,7 @@ function updateConnection() {
   renderRoom();
   renderDiscoveries();
   renderContactManager();
+  renderRepeater();
 }
 function renderDiscoveries() {
   const connected=backendOnline&&state.status==='connected';
@@ -452,3 +453,39 @@ stream.addEventListener('radio',e=>{const event=JSON.parse(e.data);state.events.
 stream.addEventListener('message',()=>{if(selection)loadMessages();});
 stream.onerror=()=>{backendOnline=false;connectionError=true;updateConnection();error('Der Webserver ist nicht erreichbar. Die Verbindung wird automatisch wiederhergestellt.');};
 setInterval(renderChart,2000);renderNav();renderChart();updateConnection();
+
+function renderRepeater() {
+  const select=$('repeater-target'), previous=select.value;
+  const entries=Object.entries(state.contacts).filter(([,c])=>c.type===2&&!c.unknown);
+  select.replaceChildren(...entries.map(([key,c])=>{const option=node('option','',c.adv_name||key);option.value=key;return option;}));
+  if(entries.some(([key])=>key===previous))select.value=previous;
+  if(previous!==select.value) {$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';}
+  if(!entries.length)select.append(node('option','','Keine gespeicherten Repeater'));
+  const session=state.repeaters?.[select.value], status=session?.status||'disconnected';
+  const blocked=!backendOnline||state.status!=='connected'||!entries.length||repeaterBusy||status==='logging_in';
+  select.disabled=repeaterBusy;
+  $('repeater-password').disabled=blocked;
+  $('repeater-login').disabled=blocked;
+  $('repeater-logout').disabled=blocked||status!=='logged_in';
+  $('repeater-command').disabled=blocked||status!=='logged_in';
+  $('repeater-send').disabled=blocked||status!=='logged_in'||!$('repeater-command').value.trim()||encoder.encode($('repeater-command').value).length>160;
+  $('repeater-status').textContent={disconnected:'Nicht angemeldet',logging_in:'Anmeldung läuft …',logged_in:'Angemeldet',failed:'Anmeldung fehlgeschlagen',timeout:'Keine Anmeldebestätigung'}[status]||status;
+  const transcript=(session?.replies||[]).map(reply=>`${new Date(reply.time*1000).toLocaleTimeString('de-DE')}  ${reply.text}`).join('\n');
+  const output=$('repeater-replies');
+  if(output.textContent!==(transcript||'Noch keine CLI-Antwort empfangen.')) {output.textContent=transcript||'Noch keine CLI-Antwort empfangen.';output.scrollTop=output.scrollHeight;}
+}
+async function repeaterAction(action) {
+  const target=$('repeater-target').value;
+  const value=action==='login'?$('repeater-password').value:action==='command'?$('repeater-command').value:'';
+  $('repeater-password').value='';repeaterBusy=true;renderRepeater();$('repeater-feedback').textContent='';
+  try {
+    applyState(await api('/api/repeaters',{target,action,value}));
+    if(action==='command') {$('repeater-command').value='';$('repeater-feedback').textContent='An Companion übergeben · Ausführung noch nicht bestätigt. Antworten erscheinen unten.';}
+  } catch(e) {$('repeater-feedback').textContent=e.message;}
+  finally {repeaterBusy=false;renderRepeater();}
+}
+$('repeater-target').onchange=()=>{$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';renderRepeater();};
+$('repeater-command').oninput=renderRepeater;
+$('repeater-login-form').onsubmit=e=>{e.preventDefault();if(!$('repeater-login').disabled)repeaterAction('login');};
+$('repeater-command-form').onsubmit=e=>{e.preventDefault();if(!$('repeater-send').disabled)repeaterAction('command');};
+$('repeater-logout').onclick=()=>repeaterAction('logout');

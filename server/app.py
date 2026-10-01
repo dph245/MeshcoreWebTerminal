@@ -267,6 +267,8 @@ class Bridge:
         self.task = None
         self.pending_dms = {}
         self.dm_wakeups = {}
+        self.repeaters = {}
+        self.repeater_login_tasks = {}
         self.rooms = {}
         self.room_login_task = None
         self.room_sends = {}
@@ -276,6 +278,7 @@ class Bridge:
         return public(dict(status=self.status, error=self.error, host=self.host, port=self.port,
                            channels=self.channels, contacts=self.contacts, discovered=self.discovered, info=self.info,
                            device=self.device, stats=self.stats, events=list(self.events),
+                           repeaters=self.repeaters,
                            rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
                            scopes={"default": self.default_scope, "supported": self.scope_supported,
                                    "channels": self.channel_scopes}))
@@ -315,6 +318,14 @@ class Bridge:
         elif name.startswith("STATS_"):
             self.stats[name] = p
             self.changed()
+        elif name == "CONTACT_MSG_RECV" and p.get("txt_type") == 1:
+            prefix = p.get("pubkey_prefix")
+            matches = [key for key in self.repeaters if prefix and key.startswith(prefix)]
+            if len(matches) == 1:
+                session = self.repeaters[matches[0]]
+                session["replies"] = (session["replies"] + [{"time": time.time(), "text": p.get("text", "")}])[-50:]
+                self.changed()
+            # CLI replies may contain configuration secrets; keep them out of persistent chat/event logs.
         elif name in ("CONTACT_MSG_RECV", "CHANNEL_MSG_RECV"):
             kind = "channel" if name == "CHANNEL_MSG_RECV" else "dm"
             target = str(p["channel_idx"]) if kind == "channel" else p["pubkey_prefix"]
@@ -347,6 +358,15 @@ class Bridge:
             self.log(name, p)
         elif name in ("LOGIN_SUCCESS", "LOGIN_FAILED"):
             prefix = p.get("pubkey_prefix") or public(event.attributes).get("pubkey_prefix")
+            repeater_matches = [key for key, session in self.repeaters.items()
+                                if prefix and key.startswith(prefix) and session["status"] == "logging_in"]
+            if len(repeater_matches) == 1:
+                key = repeater_matches[0]
+                self.repeaters[key]["status"] = "logged_in" if name == "LOGIN_SUCCESS" else "failed"
+                task = self.repeater_login_tasks.pop(key, None)
+                if task:
+                    task.cancel()
+                self.changed()
             matches = [key for key, room in self.rooms.items()
                        if prefix and key.startswith(prefix) and room["status"] == "logging_in"]
             if len(matches) == 1:
@@ -745,6 +765,56 @@ class Bridge:
         if not self.ready or not self.radio or not self.radio.is_connected:
             raise HTTPException(409, "Der Companion ist nicht verbunden.")
 
+    def require_repeater(self, target):
+        contact = self.contacts.get(target)
+        if not contact or contact.get("type") != 2 or contact.get("unknown"):
+            raise HTTPException(404, "Kein gespeicherter Repeater-Kontakt.")
+        return contact
+
+    async def repeater_login_expiry(self, target, timeout):
+        try:
+            await asyncio.sleep(timeout)
+            self.repeaters[target]["status"] = "timeout"
+            self.repeater_login_tasks.pop(target, None)
+            self.changed()
+        except asyncio.CancelledError:
+            pass
+
+    async def repeater_action(self, target, action, value=""):
+        if action == "login" and ("\x00" in value or len(value.encode("utf-8")) > 15):
+            raise HTTPException(422, "Passwort: höchstens 15 UTF-8-Bytes, keine Nullzeichen.")
+        if action == "command" and (not value.strip() or len(value.encode("utf-8")) > 160
+                                    or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise HTTPException(422, "Kommando: 1–160 UTF-8-Bytes, keine Zeilenumbrüche oder Steuerzeichen.")
+        async with self.lock:
+            self.require_ready()
+            contact = self.require_repeater(target)
+            session = self.repeaters.setdefault(target, {"status": "disconnected", "replies": []})
+            if session["status"] == "logging_in":
+                raise HTTPException(409, "Bitte die laufende Anmeldung abwarten.")
+            try:
+                if action == "login":
+                    session["status"] = "logging_in"
+                    self.changed()
+                    result = await self.command("send_login", target, value)
+                    if session["status"] == "logging_in":
+                        timeout = max(10.0, result.payload.get("suggested_timeout", 10000) / 1000 * 1.2)
+                        self.repeater_login_tasks[target] = asyncio.create_task(self.repeater_login_expiry(target, timeout))
+                elif action == "logout":
+                    await self.command("send_logout", target)
+                    session.update(status="disconnected", replies=[])
+                else:
+                    if session["status"] != "logged_in":
+                        raise HTTPException(409, "Zuerst am Repeater anmelden.")
+                    await self.command("send_cmd", {**contact, "public_key": target}, value)
+            except (RuntimeError, TimeoutError, ConnectionError):
+                if action == "login":
+                    session["status"] = "failed"
+                self.changed()
+                raise HTTPException(502, "Repeater-Anfrage vom Companion nicht bestätigt.") from None
+            self.changed()
+            return self.snapshot()
+
     def require_room(self, target):
         contact = self.contacts.get(target)
         if not contact or contact.get("type") != 3 or contact.get("unknown"):
@@ -752,6 +822,11 @@ class Bridge:
         return contact
 
     def invalidate_rooms(self):
+        for task in self.repeater_login_tasks.values():
+            task.cancel()
+        self.repeater_login_tasks.clear()
+        for session in self.repeaters.values():
+            session["status"] = "disconnected"
         if self.room_login_task:
             self.room_login_task.cancel()
             self.room_login_task = None
@@ -996,6 +1071,11 @@ class ContactInput(RoomTarget):
     type: int = Field(strict=True, ge=1, le=4)
 
 
+class RepeaterAction(RoomTarget):
+    action: Literal["login", "logout", "command"]
+    value: SecretStr = SecretStr("")
+
+
 class RoomLogin(RoomTarget):
     password: SecretStr = SecretStr("")
 
@@ -1127,6 +1207,11 @@ def create_app(db_path=None, autoconnect=None):
     @app.get("/api/messages")
     async def messages(request: Request, kind: Literal["channel", "dm", "room"], target: str, before: int | None = None):
         return request.app.state.bridge.store.history(kind, target[:12] if kind in ("dm", "room") else target, before)
+
+    @app.post("/api/repeaters")
+    async def repeater_action(request: Request, setting: RepeaterAction):
+        return await request.app.state.bridge.repeater_action(
+            setting.target.lower(), setting.action, setting.value.get_secret_value())
 
     @app.post("/api/rooms/login")
     async def room_login(request: Request, setting: RoomLogin):

@@ -124,3 +124,19 @@ Optionaler Browser-Test mit installiertem `/usr/bin/chromium` und laufender, ver
 Er prüft die echte Verbindung lesend sowie Desktop/Mobilansicht, Entwürfe und simulierte Sendeaktionen. Screenshots liegen anschließend in `test-results/`. Alle Sendeanfragen dieses Tests werden abgefangen.
 
 Protokollanbindung über [meshcore_py](https://github.com/meshcore-dev/meshcore_py); Firmware-Protokoll: [MeshCore Companion Protocol](https://github.com/meshcore-dev/MeshCore/blob/main/docs/companion_protocol.md).
+
+### Repeater-CLI
+
+Im Netzmonitor unter **Repeater-CLI** einen im Companion gespeicherten Repeater
+wählen, mit dessen Passwort anmelden und die Anmeldebestätigung abwarten.
+Danach einzelne CLI-Kommandos wie `get name` senden. Die Anzeige bestätigt zunächst
+nur die Übergabe an den Companion; Antworten erscheinen darunter. Es gibt keine
+automatische Wiederholung. Die verfügbaren Kommandos und Berechtigungen hängen
+von der Repeater-Firmware ab; siehe die
+[MeshCore CLI-Referenz](https://github.com/meshcore-dev/MeshCore/blob/main/docs/cli_commands.md).
+
+Passwörter und gesendete Kommandos werden nicht im Anwendungsverlauf gespeichert.
+Die letzten 50 CLI-Antworten je Repeater bleiben im Serverspeicher und werden beim
+Abmelden gelöscht. Alle verbundenen Webclients teilen diese Sitzungen. Nach einer
+unterbrochenen Companion-Verbindung erneut anmelden; auch bei einer abgelaufenen
+Repeater-Sitzung kann eine erneute Anmeldung nötig sein.
