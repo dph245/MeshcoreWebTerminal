@@ -127,25 +127,44 @@ function renderDiscoveries() {
   for(const [key,entry] of entries) {
     const contact=entry.contact||{}, name=contact.adv_name||key.slice(0,16);
     if(!`${name} ${key}`.toLowerCase().includes(search))continue;
-    const row=node('div','managed-channel'), details=node('span','discovery-details');
-    details.append(node('strong','',name),node('small','',key));
-    const type={1:'Chat',2:'Repeater',3:'Roomserver',4:'Sensor'}[contact.type]||'Typ unbekannt';
-    details.append(node('small','',`${type} · ${(entry.sources||[]).join(' + ')} · Zuletzt ${new Date(entry.last_seen*1000).toLocaleString('de-DE')}`));
+    const row=node('tr'), identity=node('td','device-identity');
+    const keyText=node('small','device-key',key);
+    keyText.title=key;
+    identity.append(node('strong','',name),keyText);
+    const type={1:'Chat',2:'Repeater',3:'Roomserver',4:'Sensor'}[contact.type]||'Unbekannt';
+    const seen=new Date(entry.last_seen*1000);
+    const timestamp=node('td','device-seen',seen.toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+    timestamp.title=seen.toLocaleString('de-DE');
+    row.append(identity,node('td','device-type',type),node('td','device-source',(entry.sources||[]).join(' + ')||'—'),timestamp);
     const discovery=entry.observations?.DISCOVER_RESPONSE;
-    if(discovery) {
-      const snr=value=>Number.isFinite(value)?`${value.toLocaleString('de-DE')} dB`:'nicht verfügbar';
-      const signal=node('small','',`DISCOVER-SNR · Antwort bei dir: ${snr(discovery.payload?.SNR)} · Anfrage beim Gerät: ${snr(discovery.payload?.SNR_in)}`);
-      signal.title=`Letzte DISCOVER-Antwort: ${new Date(discovery.time*1000).toLocaleString('de-DE')}`;
-      details.append(signal);
+    for(const [field,label] of [['SNR','Antwort bei dir'],['SNR_in','Anfrage beim Gerät']]) {
+      const value=discovery?.payload?.[field];
+      const signal=node('td','numeric',Number.isFinite(value)?value.toLocaleString('de-DE'):'—');
+      const description=`${label}: ${Number.isFinite(value)?value.toLocaleString('de-DE')+' dB':'nicht verfügbar'}`;
+      signal.setAttribute('aria-label',description);
+      signal.title=description+(discovery?` · DISCOVER: ${new Date(discovery.time*1000).toLocaleString('de-DE')}`:'');
+      row.append(signal);
     }
     const saved=state.contacts[key]&&!state.contacts[key].unknown;
     const complete=key.length===64&&[1,2,3,4].includes(contact.type);
-    const button=node('button','button compact',saved?'Im Kontaktbuch':complete?'Als Kontakt speichern':'Warte auf vollständige Daten');
-    button.disabled=!!saved||!complete||!connected||discoveryBusy;
-    button.onclick=()=>discoveryAction('/api/discovered/save',{target:key},'Kontakt im Companion gespeichert und bestätigt.');
-    row.append(details,button);list.append(row);
+    const action=node('td','device-action');
+    if(saved||!complete) {
+      action.append(node('span','contact-state',saved?'Gespeichert':'Unvollständig'));
+      action.title=saved?'Im Kontaktbuch':'Warte auf vollständige Daten';
+    } else {
+      const button=node('button','table-action','Speichern');
+      button.setAttribute('aria-label','Als Kontakt speichern');
+      button.title=`${name} als Kontakt speichern`;
+      button.disabled=!connected||discoveryBusy;
+      button.onclick=()=>discoveryAction('/api/discovered/save',{target:key},'Kontakt im Companion gespeichert und bestätigt.');
+      action.append(button);
+    }
+    row.append(action);list.append(row);
   }
-  if(!list.children.length)list.append(node('p','nav-empty',entries.length?'Keine passenden Geräte.':'Noch keine Geräte empfangen. DISCOVER senden oder ADVERTs abwarten.'));
+  if(!list.children.length) {
+    const row=node('tr'), cell=node('td','discovery-empty',entries.length?'Keine passenden Geräte.':'Noch keine Geräte empfangen. DISCOVER senden oder ADVERTs abwarten.');
+    cell.colSpan=7;row.append(cell);list.append(row);
+  }
 }
 async function discoveryAction(path, body, success) {
   if(discoveryBusy)return;
