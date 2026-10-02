@@ -39,34 +39,76 @@ function receptionLabel(reception) {
   return `Empfangspfad · ${count}: Sender → ${hops.join(' → ')} → Du`;
 }
 function keyFor(s) {return s ? `${s.kind}:${s.target}` : '';}
+const navigationStorageKey='meshcore-navigation-v1';
+let navigation={sort:'abc',read:{},opened:{}};
+try {
+  const saved=JSON.parse(localStorage.getItem(navigationStorageKey));
+  if(saved && typeof saved==='object') navigation={
+    sort:saved.sort==='recent'?'recent':'abc',
+    read:saved.read&&typeof saved.read==='object'?saved.read:{},
+    opened:saved.opened&&typeof saved.opened==='object'?saved.opened:{}
+  };
+} catch {} // Storage may be unavailable; navigation still works for this session.
+function saveNavigation() {try {localStorage.setItem(navigationStorageKey,JSON.stringify(navigation));} catch {}}
+function navigationKey(s) {
+  return JSON.stringify([state.host,state.port,s.kind,s.target,s.kind==='channel'?s.name:null]);
+}
+function conversationInfo(s) {
+  const target=s.kind==='channel'?s.target:s.target.slice(0,12);
+  return (state.conversations||[]).find(c=>c.kind===s.kind&&c.target===target)||{};
+}
+function sortConversations(items) {
+  return items.sort((a,b)=>{
+    if(navigation.sort==='recent') {
+      const activity=s=>Math.max(Number(navigation.opened[navigationKey(s)])||0,(conversationInfo(s).last_activity||0)*1000);
+      const difference=activity(b)-activity(a);
+      if(difference)return difference;
+    }
+    return a.name.replace(/^#/,'').localeCompare(b.name.replace(/^#/,''),'de',{sensitivity:'base'})||a.target.localeCompare(b.target);
+  });
+}
+function appendUnread(button,s) {
+  if((conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0)) {
+    const dot=node('span','unread-dot');dot.title='Ungelesene Nachrichten';dot.setAttribute('aria-hidden','true');
+    button.append(dot,node('span','sr-only',' · Ungelesene Nachrichten'));
+  }
+}
+function markVisibleRead() {
+  const list=$('messages');
+  if(!selection||document.visibilityState!=='visible'||list.scrollHeight-list.scrollTop-list.clientHeight>=120)return;
+  const latest=Math.max(0,...messageRows.filter(m=>m.direction==='in').map(m=>m.id));
+  const key=navigationKey(selection);
+  if(latest>(Number(navigation.read[key])||0)) {navigation.read[key]=latest;saveNavigation();renderNav();}
+}
+$('conversation-sort').value=navigation.sort;
+$('conversation-sort').onchange=()=>{navigation.sort=$('conversation-sort').value;saveNavigation();renderNav();};
+$('messages').addEventListener('scroll',markVisibleRead);
+document.addEventListener('visibilitychange',markVisibleRead);
 function renderNav() {
   $('channel-count').textContent=state.channels.length;
   $('channels').replaceChildren();
   if(!state.channels.length) $('channels').append(node('p','nav-empty','Keine Channels geladen.'));
-  for(const channel of state.channels) {
-    const s={kind:'channel',target:String(channel.index),name:channel.name};
+  for(const s of sortConversations(state.channels.map(channel=>({kind:'channel',target:String(channel.index),name:channel.name})))) {
     const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':''));
-    b.append(node('span','','#'),node('span','nav-name',channel.name.replace(/^#/,''))); b.onclick=()=>openChat(s); $('channels').append(b);
+    b.append(node('span','','#'),node('span','nav-name',s.name.replace(/^#/,''))); appendUnread(b,s); b.onclick=()=>openChat(s); $('channels').append(b);
   }
   const contacts=Object.entries(state.contacts).filter(([,c])=>c.type===1).sort((a,b)=>(a[1].adv_name||a[0]).localeCompare(b[1].adv_name||b[0]));
   $('contact-count').textContent=contacts.length;
   $('contacts').replaceChildren();
   const search=$('contact-search').value.toLowerCase();
-  for(const [key,c] of contacts) {
-    const name=c.adv_name||key;
+  for(const s of sortConversations(contacts.map(([key,c])=>({kind:'dm',target:key,name:c.adv_name||key,unknown:!!c.unknown})))) {
+    const {name,target:key}=s;
     if(!`${name} ${key}`.toLowerCase().includes(search)) continue;
-    const s={kind:'dm',target:key,name,unknown:!!c.unknown};
     const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':'')); b.title=key;
-    b.append(node('span','contact-avatar',name.slice(0,2).toUpperCase()),node('span','nav-name',name)); b.onclick=()=>openChat(s); $('contacts').append(b);
+    b.append(node('span','contact-avatar',name.slice(0,2).toUpperCase()),node('span','nav-name',name)); appendUnread(b,s); b.onclick=()=>openChat(s); $('contacts').append(b);
   }
   if(!contacts.length) $('contacts').append(node('p','nav-empty','Chat-Kontakte erscheinen nach dem Verbinden.'));
   const rooms=Object.entries(state.contacts).filter(([,c])=>c.type===3).sort((a,b)=>(a[1].adv_name||a[0]).localeCompare(b[1].adv_name||b[0]));
   $('room-count').textContent=rooms.length;
   $('rooms').replaceChildren();
-  for(const [key,c] of rooms) {
-    const s={kind:'room',target:key,name:c.adv_name||key,unknown:!!c.unknown};
-    const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':''));b.title=key;
-    b.append(node('span','','▤'),node('span','nav-name',s.name));b.onclick=()=>openChat(s);$('rooms').append(b);
+  for(const s of sortConversations(rooms.map(([key,c])=>({kind:'room',target:key,name:c.adv_name||key,unknown:!!c.unknown})))) {
+    const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':''));b.title=s.target;
+    b.append(node('span','','▤'),node('span','nav-name',s.name));appendUnread(b,s);b.onclick=()=>openChat(s);$('rooms').append(b);
   }
   if(!rooms.length) $('rooms').append(node('p','nav-empty','Keine Roomserver im Companion gespeichert.'));
   $('monitor-nav').classList.toggle('active',!selection);
@@ -374,6 +416,7 @@ function renderChart() {
 function rememberDraft() {if(selection) drafts.set(keyFor(selection),$('message-text').value);}
 async function openChat(s) {
   rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;channelScopeDirty=false;
+  navigation.opened[navigationKey(s)]=Date.now();saveNavigation();
   $('channel-scope-feedback').textContent='';renderScopes();
   $('room-password').value='';renderRoom();
   $('monitor').hidden=true;$('chat').hidden=false;
@@ -421,6 +464,7 @@ async function loadMessages(before=null) {
     list.append(fragment);
     if(before) list.scrollTop=oldTop+list.scrollHeight-oldHeight;
     else list.scrollTop=nearBottom||firstLoad?list.scrollHeight:oldTop;
+    markVisibleRead();
   } catch(e){error(e.message);}
 }
 function updateComposer() {
@@ -450,7 +494,11 @@ $('composer').onsubmit=async e=>{
 const stream=new EventSource('/api/events');
 stream.addEventListener('state',e=>{const wasOnline=backendOnline;applyState(JSON.parse(e.data));if(selection&&!wasOnline)loadMessages();});
 stream.addEventListener('radio',e=>{const event=JSON.parse(e.data);state.events.push(event);state.events=state.events.slice(-300);renderChart();if(!paused)renderEvents();});
-stream.addEventListener('message',()=>{if(selection)loadMessages();});
+stream.addEventListener('message',e=>{
+  const data=JSON.parse(e.data||'{}');
+  if(data.conversations)state.conversations=data.conversations;
+  renderNav();if(selection)loadMessages();
+});
 stream.onerror=()=>{backendOnline=false;connectionError=true;updateConnection();error('Der Webserver ist nicht erreichbar. Die Verbindung wird automatisch wiederhergestellt.');};
 setInterval(renderChart,2000);renderNav();renderChart();updateConnection();
 

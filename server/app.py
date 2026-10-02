@@ -177,6 +177,14 @@ class Store:
             message["reception"] = json.loads(message["reception"]) if message["reception"] else None
         return result
 
+    def conversations(self):
+        return [dict(row) for row in self.db.execute("""
+            SELECT kind, target, MAX(id) AS latest_id,
+                   MAX(CASE WHEN direction='in' THEN id ELSE 0 END) AS incoming_id,
+                   MAX(timestamp) AS last_activity
+            FROM messages GROUP BY kind, target
+        """)]
+
     def record_repeater(self, key, hop):
         rows = self.db.execute("SELECT id FROM messages WHERE echo_key=? AND direction='out' AND kind='channel' LIMIT 2", (key,)).fetchall()
         if len(rows) != 1:
@@ -279,11 +287,14 @@ class Bridge:
                            channels=self.channels, contacts=self.contacts, discovered=self.discovered, info=self.info,
                            device=self.device, stats=self.stats, events=list(self.events),
                            repeaters=self.repeaters,
+                           conversations=self.store.conversations(),
                            rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
                            scopes={"default": self.default_scope, "supported": self.scope_supported,
                                    "channels": self.channel_scopes}))
 
     def emit(self, event, payload):
+        if event == "message":
+            payload = {**payload, "conversations": self.store.conversations()}
         for queue in tuple(self.listeners):
             if queue.full():
                 queue.get_nowait()

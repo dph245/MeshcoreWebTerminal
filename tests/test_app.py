@@ -1140,3 +1140,21 @@ def test_repeater_cli_validation_and_failure(bridge):
             await b.repeater_action(KEY, 'login', '')
         assert exc.value.status_code == 409
     asyncio.run(scenario())
+
+
+def test_conversation_summaries_track_incoming_and_outgoing(bridge):
+    store = bridge.store
+    incoming = store.save('channel', '0', 'in', 'Hello', 100, 'received')
+    outgoing = store.save('channel', '0', 'out', 'Reply', 200, 'sent')
+    dm = store.save('dm', KEY[:12], 'in', 'Private', 150, 'received')
+    assert store.save('channel', '0', 'in', 'Hello', 100, 'received') is None
+    summaries = {(c['kind'], c['target']): c for c in bridge.snapshot()['conversations']}
+    assert summaries['channel', '0'] == dict(kind='channel', target='0', latest_id=outgoing,
+                                             incoming_id=incoming, last_activity=200)
+    assert summaries['dm', KEY[:12]]['incoming_id'] == dm
+    queue = asyncio.Queue()
+    bridge.listeners.add(queue)
+    bridge.emit('message', {'ack': 'test'})
+    assert queue.get_nowait()['data']['conversations'] == store.conversations()
+    store.db.execute("UPDATE messages SET target='archive:0' WHERE kind='channel'")
+    assert not any(c['target'] == '0' for c in store.conversations())

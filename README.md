@@ -103,6 +103,15 @@ Beiträge sind auf 150 UTF-8-Bytes begrenzt. Der Versand verwendet normale Textn
 
 Protokollgrundlagen: [Companion-Firmware](https://github.com/meshcore-dev/MeshCore/blob/main/examples/companion_radio/MyMesh.cpp), [Roomserver-Firmware](https://github.com/meshcore-dev/MeshCore/blob/main/examples/simple_room_server/MyMesh.cpp).
 
+## Nachrichtenlisten
+
+Kanäle, Direktnachrichten und Roomserver zeigen bei ungelesenen eingehenden
+Nachrichten einen roten Punkt. Beim Lesen am Ende des geöffneten Verlaufs
+verschwindet er; Hintergrund-Tabs markieren Nachrichten nicht als gelesen.
+Die Sortierung in der Seitenleiste bietet **ABC** und **Zuletzt benutzt**
+(Öffnen oder letzte Nachricht). Lesestand, letzte Öffnung und Sortierauswahl
+werden pro Browser gespeichert und bleiben beim Neuladen erhalten.
+
 ## Tests
 
 ```sh
@@ -111,6 +120,7 @@ Protokollgrundlagen: [Companion-Firmware](https://github.com/meshcore-dev/MeshCo
 .venv/bin/python tests/browser_rooms.py
 .venv/bin/python tests/browser_discovery.py
 .venv/bin/python tests/browser_contacts.py
+.venv/bin/python tests/browser_navigation.py
 ```
 
 Die Tests verwenden einen simulierten Companion und senden nichts ins Funknetz. Sie prüfen Persistenz, Duplikaterkennung, Empfangsrouting, UTF-8-Grenzen, ACKs, Fehlerfälle und API-Schutz.
