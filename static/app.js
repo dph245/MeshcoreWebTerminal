@@ -334,10 +334,8 @@ function renderScopes() {
   $('default-scope-current').textContent=scopes.supported?(scopes.default||'Ohne Scope'):'Nicht verfügbar';
   if(!defaultScopeDirty) $('default-scope-input').value=scopes.default||'';
   for(const id of ['default-scope-input','default-scope-save','default-scope-clear']) $(id).disabled=!online||!scopes.supported||scopeSaving;
-  const scopeSelect=$('scope-channel');
-  scopeSelect.replaceChildren(...state.channels.map(c=>{const o=node('option','',c.name);o.value=String(c.index);return o;}));
-  if(!state.channels.some(c=>String(c.index)===scopeChannel)) {scopeChannel=state.channels.length?String(state.channels[0].index):'';channelScopeDirty=false;}
-  scopeSelect.value=scopeChannel;
+  const nextChannel=selection?.kind==='channel'?selection.target:'';
+  if(scopeChannel!==nextChannel) {scopeChannel=nextChannel;channelScopeDirty=false;}
   const channel=scopeChannel!=='';
   $('channel-scope-form').hidden=!channel;
   if(channel){
@@ -358,8 +356,8 @@ async function saveScope(channel, scope) {
     const result=await api('/api/scopes',{channel,scope});
     if(channel===null)defaultScopeDirty=false;
     else if(scopeChannel===channel)channelScopeDirty=false;
-    applyState(result);$(feedback).textContent='Gespeichert.';
-  }catch(e){$(feedback).textContent=e.message;}
+    applyState(result);if(channel===null||scopeChannel===channel)$(feedback).textContent='Gespeichert.';
+  }catch(e){if(channel===null||scopeChannel===channel)$(feedback).textContent=e.message;}
   finally{scopeSaving=false;renderScopes();}
 }
 $('default-scope-input').oninput=()=>{defaultScopeDirty=true;$('default-scope-feedback').textContent='';};
@@ -368,7 +366,6 @@ $('default-scope-clear').onclick=()=>saveScope(null,'');
 $('channel-scope-mode').onchange=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';renderScopes();};
 $('channel-scope-input').oninput=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';};
 $('channel-scope-form').onsubmit=e=>{e.preventDefault();if(scopeChannel==='')return;const mode=$('channel-scope-mode').value;saveScope(scopeChannel,mode==='unscoped'?'*':mode==='region'?$('channel-scope-input').value:'');};
-$('scope-channel').onchange=()=>{scopeChannel=$('scope-channel').value;channelScopeDirty=false;renderScopes();};
 function renderEvents() {
   const filter=$('event-filter').value;
   const events=(paused?pausedEvents:state.events).filter(e=>e.type==='RX_LOG_DATA'&&(filter==='all'||String(e.payload?.payload_type)===filter));
@@ -474,7 +471,8 @@ showTab('terminal');renderNav();updateConnection();
 
 function renderRepeater() {
   const select=$('repeater-target'), previous=select.value;
-  const entries=Object.entries(state.contacts).filter(([,c])=>[2,3].includes(c.type)&&!c.unknown);
+  const entries=Object.entries(state.contacts).filter(([,c])=>[2,3].includes(c.type)&&!c.unknown)
+    .sort(([keyA,a],[keyB,b])=>(a.adv_name||keyA).localeCompare(b.adv_name||keyB,'de',{sensitivity:'base'})||keyA.localeCompare(keyB));
   select.replaceChildren(...entries.map(([key,c])=>{const option=node('option','',c.adv_name||key);option.value=key;return option;}));
   if(entries.some(([key])=>key===previous))select.value=previous;
   if(previous!==select.value) {$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';}

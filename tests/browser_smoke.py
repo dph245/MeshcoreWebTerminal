@@ -85,16 +85,28 @@ with sync_playwright() as p:
     assert state['scopes']['default'] == '#region'
     page.locator('#default-scope-clear').click()
     expect(page.locator('#default-scope-current')).to_have_text('Ohne Scope')
+    page.locator('#terminal-nav').click()
+    page.locator('#channels button').click()
+    expect(page.locator('.chat-heading #channel-scope-form')).to_be_visible()
+    expect(page.locator('#device #channel-scope-form')).to_have_count(0)
     page.locator('#channel-scope-mode').select_option('region')
     page.locator('#channel-scope-input').fill('#local')
     page.locator('#channel-scope-save').click()
     expect(page.locator('#channel-scope-current')).to_have_text('Aktiv: #local')
+    assert state['scopes']['channels']['0'] == '#local'
+    assert state['scopes']['default'] == ''
+    state['channels'].append({'index': 2, 'name': '#anderer'})
+    page.evaluate('(data)=>stream.listeners.state({data:JSON.stringify(data)})', state)
+    page.locator('#channels button').filter(has_text='anderer').click()
+    expect(page.locator('#channel-scope-mode')).to_have_value('default')
+    expect(page.locator('#channel-scope-input')).to_have_value('')
+    page.locator('#channels button').filter(has_text='Public').click()
     expect(page.locator('#channel-scope-input')).to_have_value('#local')
     page.locator('#channel-scope-mode').select_option('unscoped')
     page.locator('#channel-scope-save').click()
     expect(page.locator('#channel-scope-current')).to_have_text('Aktiv: Ohne Scope')
     page.locator('#terminal-nav').click()
-    page.locator('#channels button').click()
+    page.locator('#channels button').filter(has_text='Public').click()
     page.locator('#message-text').fill('<img src=x onerror=alert(1)> Moin')
     page.locator('#send').click()
     expect(page.locator('.bubble')).to_have_text('<img src=x onerror=alert(1)> Moin')
@@ -108,6 +120,7 @@ with sync_playwright() as p:
         expect(page.locator('.message-meta')).to_contain_text(f'von {count} '+('Repeater' if count==1 else 'Repeatern')+' empfangen')
     messages.clear()
     page.locator('#contacts button').click()
+    expect(page.locator('#channel-scope-form')).to_be_hidden()
     page.locator('#message-text').fill('Hallo Testkontakt')
     page.locator('#send').click()
     expect(page.locator('.bubble')).to_have_text('Hallo Testkontakt')
@@ -129,6 +142,7 @@ with sync_playwright() as p:
         {'id':13,'direction':'in','text':'Alter Verlauf','timestamp':time.time(),'status':'received','target':key,'reception':None},
     ]
     page.locator('#contacts button').click()
+    expect(page.locator('#channel-scope-form')).to_be_hidden()
     expect(page.locator('.message-path')).to_have_count(0)
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Chat path mobile overflow'
