@@ -34,6 +34,7 @@ with sync_playwright() as p:
       addEventListener(name,callback){this.listeners[name]=callback;}
     };''')
     page.goto('http://mesh.test/')
+    page.locator('#device-nav').click()
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
     state['contacts'][KEY] = {'type': 2, 'adv_name': 'Relay', 'public_key': KEY}
     state['repeaters'] = {}

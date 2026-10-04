@@ -52,6 +52,8 @@ with sync_playwright() as p:
         page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
 
     refresh()
+    page.locator('#device-nav').click()
+    page.locator('#companion-settings').evaluate('(el)=>el.open=true')
     expect(page.locator('#multi-acks-current')).to_have_text('Aus')
     page.locator('#multi-acks-enabled').check()
     refresh()  # A live update must preserve the user's unsaved choice.
@@ -69,9 +71,10 @@ with sync_playwright() as p:
     expect(page.locator('#multi-acks-current')).to_have_text('Nicht verfügbar')
     expect(page.locator('#rooms button')).to_have_count(1)
     expect(page.locator('#contacts button')).to_have_count(1)
+    page.locator('#terminal-nav').click()
     page.locator('#rooms button').click()
     expect(page.locator('#room-login-form')).to_be_visible()
-    expect(page.locator('#messages')).to_contain_text('Alice · abababab')
+    expect(page.locator('#messages')).to_contain_text('Alice')
     assert page.locator('#messages img').count() == 0
     page.locator('#message-text').fill('Hallo Room')
     expect(page.locator('#send')).to_be_disabled()

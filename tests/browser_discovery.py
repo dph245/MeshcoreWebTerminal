@@ -34,11 +34,16 @@ with sync_playwright() as p:
       addEventListener(name,callback){this.listeners[name]=callback;}
     };''')
     page.goto('http://mesh.test/')
+    page.locator('#mesh-nav').click()
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
     expect(page.locator('#discovered-list')).to_contain_text('<Relay>')
     expect(page.locator('#discovered-list')).to_contain_text('DISCOVER + ADVERT')
     expect(page.locator('[aria-label="Antwort bei dir: -2,25 dB"]')).to_have_text('-2,25')
     expect(page.locator('[aria-label="Anfrage beim Gerät: 0 dB"]')).to_have_text('0')
+    page.locator('#discovered-list summary').click()
+    page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+    expect(page.locator('#discovered-list details')).to_have_attribute('open', '')
+    page.locator('#discovered-list summary').click()
     page.locator('#discover').click()
     expect(page.locator('#discovery-feedback')).to_contain_text('DISCOVER gesendet')
     assert requests[-1] == ('api/discover', {})
@@ -71,13 +76,13 @@ with sync_playwright() as p:
     for width in [1440, 1024, 768, 390]:
         page.set_viewport_size({'width': width, 'height': 1000})
         for theme in ['dark-green', 'dark-blue', 'light']:
-            page.select_option('#theme-select', theme)
+            page.evaluate('(theme)=>document.documentElement.dataset.theme=theme', theme)
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), (width, theme)
         if width == 1440:
             assert page.locator('#discovered-list tr').first.bounding_box()['height'] <= 44
         if width in [1440, 390]:
-            page.select_option('#theme-select', 'dark-green')
-            page.screenshot(path=f'/tmp/mesh-monitor-{width}.png', full_page=True)
+            page.evaluate("document.documentElement.dataset.theme='dark-green'")
+            page.screenshot(path=f'/tmp/mesh-discovery-{width}.png', full_page=True)
     assert not errors, errors
     browser.close()
 print('Discovery browser checks passed (desktop and mobile).')

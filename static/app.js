@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 const state = { status: 'offline', channels: [], contacts: {}, events: [], stats: {}, info: {}, device: {} };
+let activeTab = 'terminal', pausedEvents = [], scopeChannel = '';
 let selection = null, paused = false, sending = false, backendOnline = false, historyVersion = 0;
 let messageRows = [], olderAvailable = false, connectionError = false;
 let scopeSaving = false, defaultScopeDirty = false, channelScopeDirty = false;
@@ -11,7 +12,6 @@ const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
 const eventNames = {DISCOVER_RESPONSE:'DISCOVER-Antwort', DISCOVER_SENT:'DISCOVER gesendet', RX_LOG_DATA:'Funkpaket', RAW_DATA:'Rohdaten', ADVERTISEMENT:'Advertisement', NEW_CONTACT:'Neuer Kontakt', PATH_UPDATE:'Route aktualisiert', ACK:'Bestätigung', MESSAGE_SENT:'Nachricht gesendet', CHANNEL_MSG_RECV:'Channel-Nachricht', CONTACT_MSG_RECV:'Direktnachricht', CONNECTED:'Verbunden', CONNECTION_ERROR:'Verbindungsfehler', TRACE_DATA:'Route / Trace'};
-const radioTypes = ['RX_LOG_DATA','RAW_DATA'];
 function node(tag, className, text) { const el = document.createElement(tag); if(className) el.className=className; if(text!==undefined) el.textContent=text; return el; }
 function error(message) { $('error').textContent=message || ''; $('error').hidden=!message; }
 async function api(path, body) {
@@ -24,20 +24,9 @@ function contactName(key) { const found=Object.entries(state.contacts).find(([k]
 function roomAuthor(key) {
   if(!key) return 'Absender unbekannt';
   const matches=Object.entries(state.contacts).filter(([k])=>k.startsWith(key));
-  return matches.length===1 ? `${matches[0][1].adv_name||key} · ${key}` : `Absender ${key}`;
+  return matches.length===1 ? (matches[0][1].adv_name||key) : `Absender ${key}`;
 }
-function receptionLabel(reception) {
-  if(!reception || !['flood','direct'].includes(reception.routing)) return 'Empfangspfad: nicht verfügbar';
-  if(reception.routing==='direct') return 'Empfangspfad: Direct-Routing · Knotenfolge nicht übermittelt';
-  if(reception.hops===0) return 'Empfangspfad: direkt empfangen · 0 Hops';
-  const count=`${reception.hops} ${reception.hops===1?'Hop':'Hops'}`;
-  if(!reception.path?.length) return `Empfangspfad: ${count} · Knotenfolge nicht verfügbar`;
-  const hops=reception.path.map(hash=>{
-    const matches=Object.entries(state.contacts).filter(([key])=>key.toLowerCase().startsWith(hash));
-    return matches.length===1 && matches[0][1].adv_name ? `${matches[0][1].adv_name} (${hash})` : hash;
-  });
-  return `Empfangspfad · ${count}: Sender → ${hops.join(' → ')} → Du`;
-}
+
 function keyFor(s) {return s ? `${s.kind}:${s.target}` : '';}
 const navigationStorageKey='meshcore-navigation-v1';
 let navigation={sort:'abc',read:{},opened:{}};
@@ -75,7 +64,7 @@ function appendUnread(button,s) {
 }
 function markVisibleRead() {
   const list=$('messages');
-  if(!selection||document.visibilityState!=='visible'||list.scrollHeight-list.scrollTop-list.clientHeight>=120)return;
+  if(activeTab!=='terminal'||!selection||document.visibilityState!=='visible'||list.scrollHeight-list.scrollTop-list.clientHeight>=120)return;
   const latest=Math.max(0,...messageRows.filter(m=>m.direction==='in').map(m=>m.id));
   const key=navigationKey(selection);
   if(latest>(Number(navigation.read[key])||0)) {navigation.read[key]=latest;saveNavigation();renderNav();}
@@ -111,29 +100,23 @@ function renderNav() {
     b.append(node('span','','▤'),node('span','nav-name',s.name));appendUnread(b,s);b.onclick=()=>openChat(s);$('rooms').append(b);
   }
   if(!rooms.length) $('rooms').append(node('p','nav-empty','Keine Roomserver im Companion gespeichert.'));
-  $('monitor-nav').classList.toggle('active',!selection);
+
 }
 function applyState(data) {
   Object.assign(state,data); backendOnline=true;
   if(selection && ['dm','room'].includes(selection.kind) && !state.contacts[selection.target]) {
     rememberDraft();selection=null;historyVersion++;messageRows=[];
-    $('chat').hidden=true;$('monitor').hidden=false;$('breadcrumb-title').textContent='Netzmonitor';
+    showTab(activeTab);
   }
   if(selection?.kind==='channel'&&!state.channels.some(c=>String(c.index)===selection.target&&c.name===selection.name)) {
     drafts.delete(keyFor(selection));selection=null;historyVersion++;messageRows=[];
-    $('chat').hidden=true;$('monitor').hidden=false;$('breadcrumb-title').textContent='Netzmonitor';
+    showTab(activeTab);
   }
   $('endpoint').textContent=`${state.host}:${state.port}`;
   $('device-name').textContent=state.info.name||'Dein Companion';
-  $('metric-endpoint').textContent=`TCP · ${state.host}:${state.port}`;
-  $('metric-contacts').textContent=Object.keys(state.contacts).length || '0';
-  $('metric-rx').textContent=state.stats.STATS_PACKETS?.recv ?? '—';
-  $('metric-rx-hint').textContent=state.stats.STATS_PACKETS?'Seit Gerätestart':'Warte auf Funkstatistik';
-  $('metric-rssi').textContent=state.stats.STATS_RADIO?.last_rssi!==undefined ? `${state.stats.STATS_RADIO.last_rssi} dBm` : '—';
-  $('metric-snr').textContent=state.stats.STATS_RADIO?.last_snr!==undefined ? `SNR ${state.stats.STATS_RADIO.last_snr} dB` : 'RSSI / SNR';
   const info=[['Adresse',`${state.host}:${state.port}`],['Gerät',state.info.name||state.device.model||'—'],['Firmware',state.device.ver||'—'],['Frequenz',state.info.radio_freq ? `${state.info.radio_freq} MHz`:'—'],['Rauschpegel',state.stats.STATS_RADIO?.noise_floor!==undefined?`${state.stats.STATS_RADIO.noise_floor} dBm`:'—']];
   $('radio-info').replaceChildren(...info.map(([key,value])=>{const row=node('div');row.append(node('dt','',key),node('dd','',value));return row;}));
-  updateConnection(); renderNav(); renderChart(); if(!paused) renderEvents();
+  updateConnection(); renderNav(); if(!paused) renderEvents();
   renderScopes();
   renderPathHash();
   renderMultiAcks();
@@ -144,8 +127,8 @@ function applyState(data) {
 function updateConnection() {
   const connected=backendOnline&&state.status==='connected';
   $('connection-status').textContent=backendOnline?statusNames[state.status]:'Server nicht erreichbar';
-  $('metric-status').textContent=backendOnline?statusNames[state.status]:'Offline';
   $('device-dot').classList.toggle('online',connected);
+  $('connect').hidden=connected;
   $('connect').disabled=!backendOnline||state.status!=='offline';
   $('connect').textContent=connected?'Verbunden':state.status==='offline'?'Verbinden':'Verbinde …';
   $('refresh').disabled=!connected;
@@ -166,14 +149,18 @@ function renderDiscoveries() {
   const entries=Object.entries(state.discovered||{}).sort((a,b)=>b[1].last_seen-a[1].last_seen);
   $('discovered-count').textContent=entries.length;
   const search=$('discovered-search').value.toLowerCase();
-  const list=$('discovered-list');list.replaceChildren();
+  const list=$('discovered-list');
+  const expanded=new Set([...list.querySelectorAll('details[open]')].map(el=>el.dataset.key));
+  list.replaceChildren();
   for(const [key,entry] of entries) {
     const contact=entry.contact||{}, name=contact.adv_name||key.slice(0,16);
     if(!`${name} ${key}`.toLowerCase().includes(search))continue;
     const row=node('tr'), identity=node('td','device-identity');
     const keyText=node('small','device-key',key);
     keyText.title=key;
-    identity.append(node('strong','',name),keyText);
+    const details=node('details');details.dataset.key=key;details.open=expanded.has(key);
+    details.append(node('summary','',name),keyText);
+    identity.append(details);
     const type={1:'Chat',2:'Repeater',3:'Roomserver',4:'Sensor'}[contact.type]||'Unbekannt';
     const seen=new Date(entry.last_seen*1000);
     const timestamp=node('td','device-seen',seen.toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}));
@@ -275,10 +262,6 @@ async function changeContact(path, body) {
   } catch(e) {$('contact-feedback').textContent=e.message;}
   finally {contactSaving=false;renderContactManager();}
 }
-$('manage-contacts').onclick=()=>{
-  $('monitor-nav').click();$('contact-manager').hidden=false;$('contact-manager').scrollIntoView({behavior:'smooth',block:'start'});
-  $('new-contact-name').focus({preventScroll:true});
-};
 $('managed-contact-search').oninput=renderContactManager;
 $('add-contact-form').onsubmit=e=>{
   e.preventDefault();if($('add-contact').disabled)return;
@@ -310,10 +293,6 @@ async function changeChannel(path, body) {
   }catch(e){$('channel-feedback').textContent=e.message;}
   finally{channelSaving=false;renderChannelManager();updateComposer();}
 }
-$('manage-channels').onclick=()=>{
-  $('monitor-nav').click();$('channel-manager').hidden=false;$('channel-manager').scrollIntoView({behavior:'smooth',block:'start'});
-  $('new-channel-name').focus({preventScroll:true});
-};
 $('add-channel-form').onsubmit=e=>{e.preventDefault();if(!channelSaving)changeChannel('/api/channels',{name:$('new-channel-name').value});};
 function renderMultiAcks() {
   const value=state.info.multi_acks;
@@ -355,10 +334,14 @@ function renderScopes() {
   $('default-scope-current').textContent=scopes.supported?(scopes.default||'Ohne Scope'):'Nicht verfügbar';
   if(!defaultScopeDirty) $('default-scope-input').value=scopes.default||'';
   for(const id of ['default-scope-input','default-scope-save','default-scope-clear']) $(id).disabled=!online||!scopes.supported||scopeSaving;
-  const channel=selection?.kind==='channel';
+  const scopeSelect=$('scope-channel');
+  scopeSelect.replaceChildren(...state.channels.map(c=>{const o=node('option','',c.name);o.value=String(c.index);return o;}));
+  if(!state.channels.some(c=>String(c.index)===scopeChannel)) {scopeChannel=state.channels.length?String(state.channels[0].index):'';channelScopeDirty=false;}
+  scopeSelect.value=scopeChannel;
+  const channel=scopeChannel!=='';
   $('channel-scope-form').hidden=!channel;
   if(channel){
-    const scope=scopes.channels?.[selection.target]||'';
+    const scope=scopes.channels?.[scopeChannel]||'';
     $('channel-scope-current').textContent=`Aktiv: ${scopeLabel(scope)}`;
     if(!channelScopeDirty){$('channel-scope-mode').value=scope==='*'?'unscoped':scope?'region':'default';$('channel-scope-input').value=scope==='*'?'':scope;}
   }
@@ -374,7 +357,7 @@ async function saveScope(channel, scope) {
   try{
     const result=await api('/api/scopes',{channel,scope});
     if(channel===null)defaultScopeDirty=false;
-    else if(selection?.target===channel)channelScopeDirty=false;
+    else if(scopeChannel===channel)channelScopeDirty=false;
     applyState(result);$(feedback).textContent='Gespeichert.';
   }catch(e){$(feedback).textContent=e.message;}
   finally{scopeSaving=false;renderScopes();}
@@ -384,22 +367,22 @@ $('default-scope-form').onsubmit=e=>{e.preventDefault();saveScope(null,$('defaul
 $('default-scope-clear').onclick=()=>saveScope(null,'');
 $('channel-scope-mode').onchange=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';renderScopes();};
 $('channel-scope-input').oninput=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';};
-$('channel-scope-form').onsubmit=e=>{e.preventDefault();if(selection?.kind!=='channel')return;const mode=$('channel-scope-mode').value;saveScope(selection.target,mode==='unscoped'?'*':mode==='region'?$('channel-scope-input').value:'');};
+$('channel-scope-form').onsubmit=e=>{e.preventDefault();if(scopeChannel==='')return;const mode=$('channel-scope-mode').value;saveScope(scopeChannel,mode==='unscoped'?'*':mode==='region'?$('channel-scope-input').value:'');};
+$('scope-channel').onchange=()=>{scopeChannel=$('scope-channel').value;channelScopeDirty=false;renderScopes();};
 function renderEvents() {
   const filter=$('event-filter').value;
-  const events=state.events.filter(e=>filter==='all'||(filter==='radio'?radioTypes.includes(e.type):['CHANNEL_MSG_RECV','CONTACT_MSG_RECV','MESSAGE_SENT','ACK'].includes(e.type)));
-  $('event-count').textContent=state.events.length;
+  const events=(paused?pausedEvents:state.events).filter(e=>e.type==='RX_LOG_DATA'&&(filter==='all'||String(e.payload?.payload_type)===filter));
+  $('event-count').textContent=events.length;
   $('events-empty').hidden=events.length>0;
   $('events').replaceChildren(...events.slice().reverse().map(e=>{
     const p=e.payload||{}, row=node('tr');
     const description=describePacket(e);
-    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), description.type, description.summary, p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
+    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), description.type, packetPreview(e), p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
     values.forEach((value,index)=>{
-      const cell=node('td','',index===2?undefined:value);
-      if(index===2){
-        cell.className='event-description';
-        cell.append(node('span','',value));
-        const button=node('button','packet-open','Details ansehen');
+      const cell=node('td',index===2?'event-description':'',index===0?undefined:value);
+      if(index===0){
+        const button=node('button','packet-open',value);
+        button.setAttribute('aria-label',`${value} · ${description.type} · Details ansehen`);
         button.type='button';button.onclick=()=>showPacket(e);cell.append(button);
       }else cell.title=String(value);
       row.append(cell);
@@ -407,23 +390,17 @@ function renderEvents() {
     return row;
   }));
 }
-function renderChart() {
-  const now=Date.now()/1000, bins=Array(30).fill(0);
-  for(const e of state.events) if(radioTypes.includes(e.type)) {const i=Math.floor((e.time-(now-60))/2);if(i>=0&&i<30) bins[i]++;}
-  const max=Math.max(3,...bins);
-  $('activity-chart').replaceChildren(...bins.map(count=>{const bar=node('div','bar');bar.style.height=`${Math.max(2,count/max*100)}%`;bar.title=`${count} Funkpakete / 2 s`;return bar;}));
-}
+
 function rememberDraft() {if(selection) drafts.set(keyFor(selection),$('message-text').value);}
 async function openChat(s) {
-  rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;channelScopeDirty=false;
+  rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;
   navigation.opened[navigationKey(s)]=Date.now();saveNavigation();
   $('channel-scope-feedback').textContent='';renderScopes();
   $('room-password').value='';renderRoom();
-  $('monitor').hidden=true;$('chat').hidden=false;
-  $('breadcrumb-title').textContent=s.kind==='channel'?`# ${s.name.replace(/^#/,'')}`:s.name;
+  showTab('terminal');
   $('chat-title').textContent=s.name;
   $('chat-icon').textContent=s.kind==='channel'?'#':s.name.slice(0,2).toUpperCase();
-  $('chat-subtitle').textContent=s.kind==='channel'?'Channel · Nachrichten über dein Mesh':s.unknown?'Unbekannter Absender · zum Antworten zuerst im Companion speichern':`${s.kind==='room'?'Roomserver':'Direktnachricht'} · ${s.target.slice(0,12)}`;
+  $('chat-subtitle').textContent=s.kind==='channel'?'Channel · Nachrichten über dein Mesh':s.unknown?'Unbekannter Absender · zum Antworten zuerst im Companion speichern':(s.kind==='room'?'Roomserver':'Direktnachricht');
   $('message-text').value=drafts.get(keyFor(s))||'';
   $('messages').replaceChildren(node('p','nav-empty','Nachrichten werden geladen …'));
   renderNav();updateComposer();await loadMessages();
@@ -443,20 +420,14 @@ async function loadMessages(before=null) {
     list.replaceChildren();
     const fragment=document.createDocumentFragment();
     if(olderAvailable){const older=node('button','button load-older','Ältere Nachrichten laden');older.onclick=()=>loadMessages(messageRows[0].id);fragment.append(older);}
-    if(!messageRows.length){const empty=node('div','empty-state');empty.append(node('span','empty-symbol',selection.kind==='channel'?'#':'↗'),node('h3','','Hier beginnt das Gespräch'),node('p','','Neue Nachrichten werden lokal gespeichert. Bereits im Companion vorhandene Nachrichten werden beim Verbinden abgeholt.'));fragment.append(empty);}
+    if(!messageRows.length){const empty=node('div','empty-state');empty.append(node('p','','Noch keine Nachrichten.'));fragment.append(empty);}
     for(const message of messageRows) {
       const wrap=node('article',`message ${message.direction}`);
-      const labels={received:'Empfangen',sent:selection.kind==='dm'?'An Companion übergeben · unbestätigt':'An Companion übergeben',delivered:'Zugestellt ✓',sending:`${message.tx_route==='flood'?'FLOOD':'DIRECT'} · Versuch ${message.tx_attempt}/3 · Warte auf Bestätigung`,unconfirmed:'Keine Zustellbestätigung · Versuche ausgeschöpft',interrupted:'Unbestätigt · Sendeversuche abgebrochen'};
+      const labels={received:'Empfangen',sent:selection.kind==='dm'?'An Companion übergeben · unbestätigt':'An Companion übergeben',delivered:'Zugestellt ✓',sending:'Warte auf Bestätigung',unconfirmed:'Keine Zustellbestätigung · Versuche ausgeschöpft',interrupted:'Unbestätigt · Sendeversuche abgebrochen'};
       if(selection.kind==='room')labels.delivered='Vom Roomserver angenommen ✓';
       if(message.direction==='out'&&selection.kind==='channel'&&message.repeater_count>0) labels.sent=`von ${message.repeater_count} ${message.repeater_count===1?'Repeater':'Repeatern'} empfangen`;
       const sender=message.direction==='out'?'Du':selection.kind==='room'?roomAuthor(message.sender_key):selection.kind==='dm'?contactName(message.target):selection.name;
       wrap.append(node('div','bubble',message.text));
-      if(message.direction==='in') wrap.append(node('div','message-path',receptionLabel(message.reception)));
-      if(message.direction==='in'&&selection.kind==='channel') {
-        const scope=message.reception?.scope;
-        const label=scope?receivedScopeLabel({received_scope:scope},true):'Nicht verfügbar · kein zugeordnetes Funkpaket';
-        wrap.append(node('div','message-path message-scope',`Scope des Absenders · ${label}`));
-      }
       const meta=node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`);
       if(message.repeater_count>0) meta.title='Anhand zurückgehörter Weiterleitungen: unterschiedliche letzte Hop-Hashes, keine vollständige Empfangsbestätigung. Hash-Kollisionen können die Anzahl verringern.';
       wrap.append(meta);fragment.append(wrap);
@@ -476,10 +447,9 @@ function updateComposer() {
   $('send').disabled=sending||scopeSaving||channelSaving||roomBlocked||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>limit;
   $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
 }
-$('monitor-nav').onclick=()=>{rememberDraft();selection=null;historyVersion++;$('monitor').hidden=false;$('chat').hidden=true;$('breadcrumb-title').textContent='Netzmonitor';renderNav();};
 $('contact-search').oninput=renderNav;
 $('event-filter').onchange=renderEvents;
-$('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'Fortsetzen':'Pausieren';if(!paused)renderEvents();};
+$('pause').onclick=()=>{paused=!paused;if(paused)pausedEvents=state.events.slice();$('pause').textContent=paused?'Fortsetzen':'Pausieren';if(!paused)renderEvents();};
 $('connect').onclick=async()=>{try{$('connect').disabled=true;await api('/api/connect',{});}catch(e){error(e.message);updateConnection();}};
 $('refresh').onclick=async()=>{try{$('refresh').disabled=true;applyState(await api('/api/refresh',{}));}catch(e){error(e.message);}finally{updateConnection();}};
 $('message-text').oninput=()=>{rememberDraft();updateComposer();};
@@ -493,22 +463,22 @@ $('composer').onsubmit=async e=>{
 };
 const stream=new EventSource('/api/events');
 stream.addEventListener('state',e=>{const wasOnline=backendOnline;applyState(JSON.parse(e.data));if(selection&&!wasOnline)loadMessages();});
-stream.addEventListener('radio',e=>{const event=JSON.parse(e.data);state.events.push(event);state.events=state.events.slice(-300);renderChart();if(!paused)renderEvents();});
+stream.addEventListener('radio',e=>{const event=JSON.parse(e.data);state.events.push(event);state.events=state.events.slice(-300);if(!paused)renderEvents();});
 stream.addEventListener('message',e=>{
   const data=JSON.parse(e.data||'{}');
   if(data.conversations)state.conversations=data.conversations;
   renderNav();if(selection)loadMessages();
 });
 stream.onerror=()=>{backendOnline=false;connectionError=true;updateConnection();error('Der Webserver ist nicht erreichbar. Die Verbindung wird automatisch wiederhergestellt.');};
-setInterval(renderChart,2000);renderNav();renderChart();updateConnection();
+showTab('terminal');renderNav();updateConnection();
 
 function renderRepeater() {
   const select=$('repeater-target'), previous=select.value;
-  const entries=Object.entries(state.contacts).filter(([,c])=>c.type===2&&!c.unknown);
+  const entries=Object.entries(state.contacts).filter(([,c])=>[2,3].includes(c.type)&&!c.unknown);
   select.replaceChildren(...entries.map(([key,c])=>{const option=node('option','',c.adv_name||key);option.value=key;return option;}));
   if(entries.some(([key])=>key===previous))select.value=previous;
   if(previous!==select.value) {$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';}
-  if(!entries.length)select.append(node('option','','Keine gespeicherten Repeater'));
+  if(!entries.length)select.append(node('option','','Keine gespeicherten Repeater / Roomserver'));
   const session=state.repeaters?.[select.value], status=session?.status||'disconnected';
   const blocked=!backendOnline||state.status!=='connected'||!entries.length||repeaterBusy||status==='logging_in';
   select.disabled=repeaterBusy;
@@ -537,3 +507,29 @@ $('repeater-command').oninput=renderRepeater;
 $('repeater-login-form').onsubmit=e=>{e.preventDefault();if(!$('repeater-login').disabled)repeaterAction('login');};
 $('repeater-command-form').onsubmit=e=>{e.preventDefault();if(!$('repeater-send').disabled)repeaterAction('command');};
 $('repeater-logout').onclick=()=>repeaterAction('logout');
+
+function showTab(tab) {
+  activeTab=tab;
+  for(const name of ['terminal','monitor','device','mesh']) {
+    const selected=name===tab, button=$(name+'-nav');
+    $(name).hidden=!selected;
+    button.setAttribute('aria-selected',String(selected));
+    button.tabIndex=selected?0:-1;
+  }
+  $('chat').hidden=!selection;
+  $('terminal-empty').hidden=!!selection;
+  if(tab==='terminal')requestAnimationFrame(markVisibleRead);
+}
+for(const [index,tab] of ['terminal','monitor','device','mesh'].entries()) {
+  const button=$(tab+'-nav');
+  button.onclick=()=>showTab(tab);
+  button.onkeydown=e=>{
+    const tabs=['terminal','monitor','device','mesh'];
+    let next;
+    if(e.key==='ArrowRight')next=(index+1)%4;
+    if(e.key==='ArrowLeft')next=(index+3)%4;
+    if(e.key==='Home')next=0;
+    if(e.key==='End')next=3;
+    if(next!==undefined){e.preventDefault();showTab(tabs[next]);$(tabs[next]+'-nav').focus();}
+  };
+}

@@ -778,8 +778,8 @@ class Bridge:
 
     def require_repeater(self, target):
         contact = self.contacts.get(target)
-        if not contact or contact.get("type") != 2 or contact.get("unknown"):
-            raise HTTPException(404, "Kein gespeicherter Repeater-Kontakt.")
+        if not contact or contact.get("type") not in (2, 3) or contact.get("unknown"):
+            raise HTTPException(404, "Kein gespeicherter Repeater- oder Roomserver-Kontakt.")
         return contact
 
     async def repeater_login_expiry(self, target, timeout):
@@ -800,6 +800,10 @@ class Bridge:
         async with self.lock:
             self.require_ready()
             contact = self.require_repeater(target)
+            # Remote login/logout is shared by room chat and CLI in the firmware.
+            # Keep their credentials and rights separate, never silently reauthenticate.
+            if self.rooms.get(target, {}).get("status") in ("logging_in", "logged_in") or target in self.room_sends:
+                raise HTTPException(409, "Zuerst die Room-Sitzung im Terminal abmelden.")
             session = self.repeaters.setdefault(target, {"status": "disconnected", "replies": []})
             if session["status"] == "logging_in":
                 raise HTTPException(409, "Bitte die laufende Anmeldung abwarten.")
@@ -816,13 +820,13 @@ class Bridge:
                     session.update(status="disconnected", replies=[])
                 else:
                     if session["status"] != "logged_in":
-                        raise HTTPException(409, "Zuerst am Repeater anmelden.")
+                        raise HTTPException(409, "Zuerst am Gerät anmelden.")
                     await self.command("send_cmd", {**contact, "public_key": target}, value)
             except (RuntimeError, TimeoutError, ConnectionError):
                 if action == "login":
                     session["status"] = "failed"
                 self.changed()
-                raise HTTPException(502, "Repeater-Anfrage vom Companion nicht bestätigt.") from None
+                raise HTTPException(502, "CLI-Anfrage vom Companion nicht bestätigt.") from None
             self.changed()
             return self.snapshot()
 
@@ -861,6 +865,8 @@ class Bridge:
         async with self.lock:
             self.require_ready()
             self.require_room(target)
+            if self.repeaters.get(target, {}).get("status") in ("logging_in", "logged_in"):
+                raise HTTPException(409, "Zuerst die CLI-Sitzung unter Device abmelden.")
             if any(room["status"] == "logging_in" for room in self.rooms.values()):
                 raise HTTPException(409, "Eine Roomserver-Anmeldung läuft bereits.")
             if target in self.room_sends:
@@ -883,6 +889,8 @@ class Bridge:
         async with self.lock:
             self.require_ready()
             self.require_room(target)
+            if self.repeaters.get(target, {}).get("status") in ("logging_in", "logged_in"):
+                raise HTTPException(409, "Zuerst die CLI-Sitzung unter Device abmelden.")
             await self.command("send_logout", target)
             if self.rooms.get(target, {}).get("status") == "logging_in" and self.room_login_task:
                 self.room_login_task.cancel()

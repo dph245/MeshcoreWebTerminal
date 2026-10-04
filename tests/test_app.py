@@ -1085,9 +1085,10 @@ def test_contact_api_validation_and_offline_guard(tmp_path):
         assert client.post('/api/contacts/remove', json={'target': KEY[:12]}, headers=headers).status_code == 422
 
 
-def test_repeater_cli_login_reply_and_disconnect(bridge):
+@pytest.mark.parametrize('device_type', [2, 3])
+def test_repeater_cli_login_reply_and_disconnect(bridge, device_type):
     b = bridge
-    b.contacts[KEY]['type'] = 2
+    b.contacts[KEY]['type'] = device_type
     b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000}))
     b.radio.commands.send_cmd = AsyncMock(return_value=Event(EventType.MSG_SENT, {}))
     b.radio.commands.send_logout = AsyncMock(return_value=Event(EventType.OK, {}))
@@ -1158,3 +1159,27 @@ def test_conversation_summaries_track_incoming_and_outgoing(bridge):
     assert queue.get_nowait()['data']['conversations'] == store.conversations()
     store.db.execute("UPDATE messages SET target='archive:0' WHERE kind='channel'")
     assert not any(c['target'] == '0' for c in store.conversations())
+
+
+def test_room_and_cli_logins_do_not_share_credentials(bridge):
+    b = bridge
+    b.contacts[KEY]['type'] = 3
+    b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {}))
+
+    async def scenario():
+        b.rooms[KEY] = {"status": "logged_in", "can_post": True}
+        with pytest.raises(HTTPException) as exc:
+            await b.repeater_action(KEY, 'login', 'admin')
+        assert exc.value.status_code == 409
+        b.radio.commands.send_login.assert_not_awaited()
+        b.rooms[KEY]['status'] = 'disconnected'
+        await b.repeater_action(KEY, 'login', 'admin')
+        with pytest.raises(HTTPException) as exc:
+            await b.login_room(KEY, 'reader')
+        assert exc.value.status_code == 409
+        assert b.radio.commands.send_login.await_count == 1
+        with pytest.raises(HTTPException) as exc:
+            await b.logout_room(KEY)
+        assert exc.value.status_code == 409
+        b.invalidate_rooms()
+    asyncio.run(scenario())

@@ -47,7 +47,8 @@ with sync_playwright() as p:
         page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
 
     refresh()
-    page.locator('#manage-contacts').click()
+    page.locator('#device-nav').click()
+    page.locator('#contact-manager > summary').click()
     expect(page.locator('#contact-manager')).to_be_visible()
     page.locator('#new-contact-name').fill('<Alice>')
     page.locator('#new-contact-key').fill(KEY.upper())
@@ -66,14 +67,16 @@ with sync_playwright() as p:
     page.locator('#add-contact').click()
     expect(page.locator('#contact-feedback')).to_contain_text('Bereits gespeichert')
     expect(page.locator('#new-contact-name')).to_have_value('Duplicate')
+    page.locator('#terminal-nav').click()
     page.locator('#contacts button').click()
     expect(page.locator('#chat')).to_be_visible()
     state['contacts'] = {}
     refresh()  # Deletion by another client closes the now invalid chat.
     expect(page.locator('#chat')).to_be_hidden()
-    expect(page.locator('#monitor')).to_be_visible()
+    expect(page.locator('#terminal')).to_be_visible()
     state['contacts'] = {KEY: {'adv_name': '<Alice>', 'type': 1}}
     refresh()
+    page.locator('#device-nav').click()
     page.locator('#managed-contacts button').click()
     expect(page.locator('#contact-feedback')).to_contain_text('gelöscht und bestätigt')
     expect(page.locator('#managed-contact-count')).to_have_text('0')

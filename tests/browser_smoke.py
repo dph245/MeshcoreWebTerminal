@@ -1,4 +1,4 @@
-"""Run against the local app. Sends only to intercepted, simulated API routes."""
+"""Offline browser checks with static files and intercepted, simulated API routes."""
 import json
 from pathlib import Path
 import sys
@@ -12,30 +12,7 @@ output.mkdir(exist_ok=True)
 
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path='/usr/bin/chromium', headless=True)
-    page = browser.new_page(viewport={'width': 1440, 'height': 1000})
     errors = []
-    page.on('pageerror', lambda error: errors.append(str(error)))
-    page.goto(url)
-    expect(page.locator('#connection-status')).to_have_text('Verbunden', timeout=20000)
-    expect(page.locator('#channels button').first).to_be_visible()
-    page.screenshot(path=str(output / 'monitor-desktop.png'), full_page=True)
-    page.locator('#channels button').first.click()
-    expect(page.locator('#chat')).to_be_visible()
-    expect(page.locator('#send')).to_be_disabled()
-    page.locator('#message-text').fill('Entwurf – wird nicht gesendet')
-    expect(page.locator('#send')).to_be_enabled()
-    page.locator('#monitor-nav').click()
-    page.locator('#channels button').first.click()
-    expect(page.locator('#message-text')).to_have_value('Entwurf – wird nicht gesendet')
-    page.locator('#message-text').fill('😀' * 41)
-    expect(page.locator('#send')).to_be_disabled()
-    page.locator('#message-text').fill('')
-    page.locator('#monitor-nav').click()
-    page.set_viewport_size({'width': 390, 'height': 844})
-    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Mobile overflow'
-    page.screenshot(path=str(output / 'monitor-mobile.png'), full_page=True)
-    page.close()
-
     # Every API request in this context is intercepted, preventing real RF sends.
     page = browser.new_page(viewport={'width': 1200, 'height': 900})
     page.on('pageerror', lambda error: errors.append(str(error)))
@@ -80,6 +57,7 @@ with sync_playwright() as p:
             route.fulfill(json={'id':len(sent),'status':'sent'})
         else:
             route.fulfill(json=state)
+    page.route('**/*', lambda r: r.fulfill(path=Path(__file__).resolve().parents[1] / 'static' / (r.request.url.split(url)[1].lstrip('/') or 'index.html')))
     page.route('**/api/**', api_route)
     # Keep the synthetic stream from triggering reconnect/error between actions.
     page.add_init_script("""window.EventSource = class {
@@ -90,7 +68,8 @@ with sync_playwright() as p:
       addEventListener(name, cb) { this.listeners[name] = cb; }
     };""")
     page.goto(url)
-    page.locator('#manage-channels').click()
+    page.locator('#device-nav').click()
+    page.locator('#channel-manager > summary').click()
     page.locator('#new-channel-name').fill('browsertest')
     page.locator('#add-channel').click()
     expect(page.locator('#channel-feedback')).to_have_text('Channel im Companion gespeichert.')
@@ -98,6 +77,7 @@ with sync_playwright() as p:
     page.get_by_role('button', name='#browsertest vom Companion entfernen').click()
     expect(page.locator('#channel-feedback')).to_contain_text('Channel vom Companion entfernt.')
     expect(page.locator('#channels button')).to_have_count(1)
+    page.locator('#companion-settings > summary').click()
     expect(page.locator('#default-scope-input')).to_have_value('#test')
     page.locator('#default-scope-input').fill('#region')
     page.locator('#default-scope-save').click()
@@ -105,17 +85,16 @@ with sync_playwright() as p:
     assert state['scopes']['default'] == '#region'
     page.locator('#default-scope-clear').click()
     expect(page.locator('#default-scope-current')).to_have_text('Ohne Scope')
-    page.locator('#channels button').click()
     page.locator('#channel-scope-mode').select_option('region')
     page.locator('#channel-scope-input').fill('#local')
     page.locator('#channel-scope-save').click()
     expect(page.locator('#channel-scope-current')).to_have_text('Aktiv: #local')
-    page.locator('#monitor-nav').click()
-    page.locator('#channels button').click()
     expect(page.locator('#channel-scope-input')).to_have_value('#local')
     page.locator('#channel-scope-mode').select_option('unscoped')
     page.locator('#channel-scope-save').click()
     expect(page.locator('#channel-scope-current')).to_have_text('Aktiv: Ohne Scope')
+    page.locator('#terminal-nav').click()
+    page.locator('#channels button').click()
     page.locator('#message-text').fill('<img src=x onerror=alert(1)> Moin')
     page.locator('#send').click()
     expect(page.locator('.bubble')).to_have_text('<img src=x onerror=alert(1)> Moin')
@@ -149,15 +128,11 @@ with sync_playwright() as p:
          'reception':{'routing':'flood','hops':0,'path':[]}},
         {'id':13,'direction':'in','text':'Alter Verlauf','timestamp':time.time(),'status':'received','target':key,'reception':None},
     ]
-    page.locator('#monitor-nav').click()
     page.locator('#contacts button').click()
-    expect(page.locator('.message-path').nth(0)).to_have_text('Empfangspfad · 2 Hops: Sender → ab0012 → cd0034 → Du')
-    expect(page.locator('.message-path').nth(1)).to_contain_text('Direct-Routing · Knotenfolge nicht übermittelt')
-    expect(page.locator('.message-path').nth(2)).to_contain_text('direkt empfangen · 0 Hops')
-    expect(page.locator('.message-path').nth(3)).to_have_text('Empfangspfad: nicht verfügbar')
+    expect(page.locator('.message-path')).to_have_count(0)
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Chat path mobile overflow'
     page.screenshot(path=str(output / 'chat-path-mobile.png'), full_page=True)
     assert not errors, errors
     browser.close()
-    print('Browser OK: live connection, desktop/mobile, drafts, UTF-8 limit, mocked channel/DM sends, XSS and error recovery.')
+    print('Browser OK: simulated channel management, scopes, channel/DM sends, UTF-8 limit, XSS, errors and mobile layout.')

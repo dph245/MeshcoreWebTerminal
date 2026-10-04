@@ -84,3 +84,14 @@ function showPacket(event) {
   $('packet-dialog').querySelector('details').open=false;
   $('packet-dialog').showModal();
 }
+
+// Compact live rows following MeshCoreOnAir's type/content/signal layout.
+// The TCP SDK does not provide OnAir's observer hash or multi-observer groups.
+function packetPreview(event) {
+  const p=event.payload||{};
+  const key=p.adv_key||p.public_key||p.pubkey_prefix;
+  const sender=p.adv_name||(typeof key==='string'?hopName(key):'');
+  const channel=p.chan_name||(p.channel_idx!==undefined?state.channels.find(c=>c.index===p.channel_idx)?.name:'');
+  const message=typeof p.message==='string'?p.message:typeof p.text==='string'?p.text:'';
+  return [sender,channel,message].filter(Boolean).join(' · ')||'Absender / Inhalt nicht verfügbar';
+}
