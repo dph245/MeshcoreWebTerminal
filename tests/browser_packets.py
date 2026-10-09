@@ -114,11 +114,29 @@ with sync_playwright() as p:
     ]
     page.evaluate("openChat({kind:'channel',target:'0',name:'Public'})")
     expect(page.locator('.message')).to_have_count(3)
-    expect(page.locator('.message-scope, .message-path')).to_have_count(0)
+    expect(page.locator('.message-scope')).to_have_count(0)
+    expect(page.locator('.message-path')).to_have_text([
+        'Pfad: Dach (ab) → Du', 'Pfad: direkt empfangen', 'Pfad: nicht verfügbar'])
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     page.screenshot(path='/tmp/mesh-chat-scopes.png', full_page=True)
     page.evaluate("openChat({kind:'dm',target:'ab',name:'Dach'})")
     expect(page.locator('.message-scope')).to_have_count(0)
+    messages[:] = [
+        {'id': 1, 'direction': 'in', 'text': 'Geroutet', 'timestamp': 1700000000, 'status': 'received',
+         'reception': {'routing': 'direct', 'hops': None, 'path': None}},
+        {'id': 2, 'direction': 'in', 'text': 'Nur Anzahl', 'timestamp': 1700000001, 'status': 'received',
+         'reception': {'routing': 'flood', 'hops': 2, 'path': None}},
+        {'id': 3, 'direction': 'in', 'text': 'Mehrere Hops', 'timestamp': 1700000002, 'status': 'received',
+         'reception': {'routing': 'flood', 'hops': 3, 'path': ['AB', 'cd', 'abcdef']}},
+        {'id': 4, 'direction': 'out', 'text': 'Gesendet', 'timestamp': 1700000003, 'status': 'sent'},
+    ]
+    page.evaluate('loadMessages()')
+    expect(page.locator('.message-path')).to_have_text([
+        'Pfad: nicht übermittelt (Direct-Routing)',
+        'Pfad: 2 Hops · Knotenfolge nicht übermittelt',
+        'Pfad: Dach (ab) → cd → abcdef → Du',
+        'Pfad: nicht übermittelt'])
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     assert not errors, errors
     browser.close()
 print('Packet browser checks passed: readable metadata, encrypted/unknown/raw packets, aliases, XSS, live updates, themes and mobile dialog.')

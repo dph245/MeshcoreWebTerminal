@@ -402,6 +402,19 @@ async function openChat(s) {
   $('messages').replaceChildren(node('p','nav-empty','Nachrichten werden geladen …'));
   renderNav();updateComposer();await loadMessages();
 }
+function messagePathLabel(message) {
+  if(message.direction!=='in')return 'Pfad: nicht übermittelt';
+  const reception=message.reception;
+  if(reception?.routing==='direct')return 'Pfad: nicht übermittelt (Direct-Routing)';
+  if(reception?.routing!=='flood'||!Number.isInteger(reception.hops)||reception.hops<0||reception.hops>63)return 'Pfad: nicht verfügbar';
+  if(reception.hops===0)return 'Pfad: direkt empfangen';
+  const path=reception.path;
+  if(Array.isArray(path)&&path.length===reception.hops&&path.every(hash=>typeof hash==='string'&&/^(?:[0-9a-f]{2}){1,3}$/i.test(hash))) {
+    return `Pfad: ${path.map(hash=>hopName(hash.toLowerCase())).join(' → ')} → Du`;
+  }
+  return `Pfad: ${reception.hops} ${reception.hops===1?'Hop':'Hops'} · Knotenfolge nicht übermittelt`;
+}
+
 async function loadMessages(before=null) {
   if(!selection)return;
   const current=keyFor(selection),version=++historyVersion;
@@ -427,7 +440,7 @@ async function loadMessages(before=null) {
       wrap.append(node('div','bubble',message.text));
       const meta=node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`);
       if(message.repeater_count>0) meta.title='Anhand zurückgehörter Weiterleitungen: unterschiedliche letzte Hop-Hashes, keine vollständige Empfangsbestätigung. Hash-Kollisionen können die Anzahl verringern.';
-      wrap.append(meta);fragment.append(wrap);
+      wrap.append(meta,node('div','message-path',messagePathLabel(message)));fragment.append(wrap);
     }
     list.append(fragment);
     if(before) list.scrollTop=oldTop+list.scrollHeight-oldHeight;
