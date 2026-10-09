@@ -8,6 +8,9 @@ let channelSaving = false, contactSaving = false;
 let pathHashSaving = false, pathHashDirty = false;
 let multiAcksSaving = false, multiAcksDirty = false;
 let roomSaving = false, discoveryBusy = false, repeaterBusy = false;
+let traceBusy=false;
+const traceDraft=[''];
+const traceStatuses={sending:'Wird gesendet',waiting:'Warte auf Antwort',complete:'Vollständig',partial:'Messwerte fehlen',timeout:'Keine Antwort innerhalb der Wartezeit',interrupted:'Unterbrochen',unconfirmed:'Sendestatus unbestätigt'};
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
@@ -140,6 +143,7 @@ function updateConnection() {
   renderChannelManager();
   renderRoom();
   renderDiscoveries();
+  renderTrace();
   renderContactManager();
   renderRepeater();
 }
@@ -537,10 +541,15 @@ function renderRepeater() {
   const select=$('repeater-target'), previous=select.value;
   const entries=Object.entries(state.contacts).filter(([,c])=>[2,3].includes(c.type)&&!c.unknown)
     .sort(([keyA,a],[keyB,b])=>(a.adv_name||keyA).localeCompare(b.adv_name||keyB,'de',{sensitivity:'base'})||keyA.localeCompare(keyB));
-  select.replaceChildren(...entries.map(([key,c])=>{const option=node('option','',c.adv_name||key);option.value=key;return option;}));
-  if(entries.some(([key])=>key===previous))select.value=previous;
-  if(previous!==select.value) {$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';}
-  if(!entries.length)select.append(node('option','','Keine gespeicherten Repeater / Roomserver'));
+  const choices=JSON.stringify(entries.map(([key,c])=>[key,c.adv_name||key]));
+  // Replacing native options dismisses an open dropdown, even with identical data.
+  if(select.dataset.choices!==choices) {
+    select.replaceChildren(...entries.map(([key,c])=>{const option=node('option','',c.adv_name||key);option.value=key;return option;}));
+    if(!entries.length)select.append(node('option','','Keine gespeicherten Repeater / Roomserver'));
+    if(entries.some(([key])=>key===previous))select.value=previous;
+    select.dataset.choices=choices;
+    if(previous!==select.value) {$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';}
+  }
   renderCliReference();
   const session=state.repeaters?.[select.value], status=session?.status||'disconnected';
   const blocked=!backendOnline||state.status!=='connected'||!entries.length||repeaterBusy||status==='logging_in';
@@ -638,5 +647,113 @@ for(const [index,tab] of monitorTabs.entries()) {
     if(e.key==='Home')next=0;
     if(e.key==='End')next=1;
     if(next!==undefined){e.preventDefault();showMonitorTab(monitorTabs[next]);$(monitorTabs[next]+'-nav').focus();}
+  };
+}
+
+// Editing never transmits. Only the form submit makes one TRACE request.
+
+function tracePath() {
+  const size=Number($('trace-size').value);
+  let path=traceDraft.map(value=>{
+    value=value.trim().toLowerCase();
+    return value.length===64&&state.contacts[value]?.type===2?value.slice(0,size*2):value;
+  });
+  if($('trace-return').checked)path=path.concat(path.slice(0,-1).reverse());
+  return path;
+}
+function renderTraceEditor() {
+  const list=$('trace-hops');list.replaceChildren();
+  traceDraft.forEach((value,index)=>{
+    const row=node('li'), input=node('input');
+    input.value=value;input.setAttribute('list','trace-contacts');input.setAttribute('aria-label',`Hop ${index+1}: Repeater-ID oder Kontakt`);
+    input.placeholder='Repeater-ID oder Kontakt';input.autocomplete='off';input.maxLength=64;
+    input.oninput=()=>{traceDraft[index]=input.value;renderTraceValidation();};
+    row.append(input);
+    for(const [label,delta] of [['↑',-1],['↓',1],['Entfernen',0]]) {
+      const button=node('button','button compact',label);button.type='button';
+      button.setAttribute('aria-label',delta?`Hop ${index+1} nach ${delta<0?'oben':'unten'}`:`Hop ${index+1} entfernen`);
+      button.disabled=delta!==0&&(index+delta<0||index+delta>=traceDraft.length);
+      button.onclick=()=>{
+        if(delta)[traceDraft[index],traceDraft[index+delta]]=[traceDraft[index+delta],traceDraft[index]];
+        else traceDraft.splice(index,1);
+        renderTraceEditor();
+      };
+      row.append(button);
+    }
+    list.append(row);
+  });
+  renderTraceValidation();
+}
+function renderTraceValidation() {
+  const size=Number($('trace-size').value), path=tracePath();
+  const max=state.trace_limits?.[size]||({1:63,2:53,4:31,8:17})[size];
+  const valid=path.length>0&&path.length<=max&&path.every(id=>new RegExp(`^[0-9a-f]{${size*2}}$`).test(id));
+  $('trace-validation').textContent=valid?`${path.length} / ${max} Hops`:`1–${max} Hops; jede ID benötigt ${size*2} Hexzeichen.`;
+  $('trace-preview').textContent=['Companion',...path.map(id=>id||'?'),'Companion'].join(' → ');
+  $('trace-send').disabled=traceBusy||!backendOnline||state.status!=='connected'||!valid;
+  $('trace-add').disabled=traceDraft.length>=63;
+}
+function renderTrace() {
+  const options=$('trace-contacts');
+  const entries=Object.entries(state.contacts||{}).filter(([,contact])=>contact.type===2&&!contact.unknown)
+    .map(([key,contact])=>[key,contact.adv_name||key]);
+  const choices=JSON.stringify(entries);
+  if(options.dataset.choices!==choices) {
+    options.replaceChildren(...entries.map(([key,label])=>{
+      const option=node('option');option.value=key;option.label=label;return option;
+    }));
+    options.dataset.choices=choices;
+  }
+  renderTraceValidation();
+  const results=$('trace-results');
+  const opened=new Set([...results.querySelectorAll('details[open]')].map(el=>el.dataset.id));
+  results.replaceChildren();
+  for(const measurement of state.traces||[]) {
+    const details=node('details');details.dataset.id=measurement.id;details.open=opened.has(measurement.id);
+    details.append(node('summary','',`${new Date(measurement.timestamp*1000).toLocaleString('de-DE')} · ${traceStatuses[measurement.status]||measurement.status} · ${measurement.id.slice(0,8)}`));
+    details.append(node('p','trace-path',['Companion',...measurement.path,'Companion'].join(' → ')));
+    if(measurement.error)details.append(node('p','',measurement.error));
+    const table=node('table'), head=node('thead'), header=node('tr'), body=node('tbody');
+    for(const title of ['Hop','Empfänger','SNR (dB)'])header.append(node('th','',title));
+    head.append(header);table.append(head,body);
+    [...measurement.path,'Companion'].forEach((id,index)=>{
+      const row=node('tr'), snr=measurement.snrs[index];
+      row.append(node('td','',index+1),node('td','',measurement.names[index]?`${measurement.names[index]} (${id})`:id),node('td',snr==null?'trace-missing':'',snr==null?'Fehlt':snr.toLocaleString('de-DE')));
+      body.append(row);
+    });
+    details.append(table);results.append(details);
+  }
+}
+$('trace-add').onclick=()=>{traceDraft.push('');renderTraceEditor();document.querySelector('#trace-hops li:last-child input').focus();};
+$('trace-size').onchange=renderTraceValidation;
+$('trace-return').onchange=renderTraceValidation;
+$('trace-form').onsubmit=async event=>{
+  event.preventDefault();if($('trace-send').disabled||traceBusy)return;
+  const body={path:[...traceDraft],hash_size:Number($('trace-size').value),return_path:$('trace-return').checked};
+  traceBusy=true;renderTraceValidation();$('trace-feedback').textContent='';
+  try {applyState(await api('/api/trace',body));$('trace-feedback').textContent='TRACE einmal gesendet.';}
+  catch(exc){$('trace-feedback').textContent=exc.message;}
+  finally{traceBusy=false;renderTraceValidation();}
+};
+renderTraceEditor();
+
+const meshTabs=['mesh-discovery','manual-trace'];
+function showMeshTab(tab) {
+  for(const name of meshTabs) {
+    const selected=name===tab, button=$(name+'-nav');
+    $(name).hidden=!selected;
+    button.setAttribute('aria-selected',String(selected));
+    button.tabIndex=selected?0:-1;
+  }
+}
+for(const [index,tab] of meshTabs.entries()) {
+  const button=$(tab+'-nav');
+  button.onclick=()=>showMeshTab(tab);
+  button.onkeydown=event=>{
+    let next;
+    if(event.key==='ArrowRight'||event.key==='ArrowLeft')next=1-index;
+    if(event.key==='Home')next=0;
+    if(event.key==='End')next=1;
+    if(next!==undefined){event.preventDefault();showMeshTab(meshTabs[next]);$(meshTabs[next]+'-nav').focus();}
   };
 }

@@ -97,7 +97,24 @@
       </section>
     </section>
     <section id="mesh" class="workspace" role="tabpanel" aria-labelledby="mesh-nav" hidden>
-      <article class="panel discovery-panel">
+      <nav class="tabs device-tabs" role="tablist" aria-label="Mesh-Bereiche">
+        <button id="mesh-discovery-nav" role="tab" aria-controls="mesh-discovery" aria-selected="true">Entdeckte Geräte</button>
+        <button id="manual-trace-nav" role="tab" aria-controls="manual-trace" aria-selected="false" tabindex="-1">Manueller TRACE</button>
+      </nav>
+      <section class="panel trace-panel" id="manual-trace" role="tabpanel" aria-labelledby="manual-trace-nav" hidden>
+        <form id="trace-form">
+          <div class="trace-controls"><label>ID-Länge <select id="trace-size"><option value="1">1 Byte</option><option value="2">2 Bytes</option><option value="4">4 Bytes</option><option value="8">8 Bytes</option></select></label></div>
+          <ol id="trace-hops"></ol>
+          <datalist id="trace-contacts"></datalist>
+          <div class="trace-controls"><button type="button" id="trace-add" class="button">Hop hinzufügen</button><label><input type="checkbox" id="trace-return"> Rückweg spiegeln</label></div>
+          <p id="trace-preview" class="trace-path"></p>
+          <p id="trace-validation" role="status"></p>
+          <button type="submit" id="trace-send" class="button">TRACE einmal senden</button>
+          <p id="trace-feedback" role="status"></p>
+        </form>
+        <div id="trace-results"></div>
+      </section>
+      <article class="panel discovery-panel" id="mesh-discovery" role="tabpanel" aria-labelledby="mesh-discovery-nav">
         <div class="panel-heading"><div class="inline-heading"><h2>Entdeckte Geräte</h2><span id="discovered-count" class="count">0</span></div><button id="discover" class="button">DISCOVER aussenden</button></div>
         <p class="discovery-hint">DISCOVER fragt erreichbare Geräte ohne einzelnes Ziel ab.</p>
         <div class="discovery-toolbar"><label class="search"><input id="discovered-search" placeholder="Name oder Geräteschlüssel suchen …" aria-label="Entdeckte Geräte suchen"></label><span class="discovery-hint">DISCOVER / ADVERT</span></div>

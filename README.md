@@ -165,3 +165,9 @@ Die letzten 50 CLI-Antworten je Gerät bleiben im Serverspeicher und werden beim
 Abmelden gelöscht. Alle verbundenen Webclients teilen diese Sitzungen. Nach einer
 unterbrochenen Companion-Verbindung erneut anmelden; auch bei einer abgelaufenen
 Gerätesitzung kann eine erneute Anmeldung nötig sein.
+
+### Manueller TRACE im Mesh-Tab
+
+Unter „Manueller TRACE“ lassen sich Repeater-Pfade bearbeiten und einmalig messen,
+optional mit gespiegeltem Rückweg. Messungen bleiben mit Zeitstempel, vollständigem
+Pfad und SNR je Hop gespeichert. [Bedienung, API-Grenzen und Tests](docs/manual-trace.md).

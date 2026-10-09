@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager, suppress
 import hashlib
 import hmac
 import json
+import math
+import secrets
 import os
 from pathlib import Path
 import sqlite3
@@ -121,6 +123,30 @@ def repeater_echo(payload):
     return key, path[-size * 2:].lower()
 
 
+# Keep TRACE replies within the original 172-byte Companion frame budget.
+TRACE_LIMITS = {size: min(63, 175 // size, 159 // (size + 1)) for size in (1, 2, 4, 8)}
+
+
+def trace_path(setting, contacts):
+    size = setting.hash_size
+    path = []
+    for value in setting.path:
+        value = value.strip().lower()
+        if len(value) == 64:
+            contact = contacts.get(value)
+            if not contact or contact.get("type") != 2:
+                raise HTTPException(422, "Der Schlüssel gehört zu keinem bekannten Repeater.")
+            value = value[:size * 2]
+        if len(value) != size * 2 or any(c not in "0123456789abcdef" for c in value):
+            raise HTTPException(422, f"Jede Repeater-ID muss {size * 2} Hexzeichen enthalten.")
+        path.append(value)
+    if setting.return_path:
+        path += path[-2::-1]
+    if not 1 <= len(path) <= TRACE_LIMITS[size]:
+        raise HTTPException(422, f"TRACE erlaubt hier 1 bis {TRACE_LIMITS[size]} Hops einschließlich Rückweg.")
+    return path
+
+
 class Store:
     def __init__(self, path):
         if path != ":memory:":
@@ -134,6 +160,7 @@ class Store:
                 text TEXT, timestamp REAL, status TEXT, ack TEXT, fingerprint TEXT UNIQUE
             );
             CREATE INDEX IF NOT EXISTS conversation ON messages(kind, target, id);
+            CREATE TABLE IF NOT EXISTS traces (id TEXT PRIMARY KEY, tag INTEGER UNIQUE, data TEXT);
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
         """)
         # Additive migration: existing chat history stays intact.
@@ -153,6 +180,14 @@ class Store:
             self.db.execute("CREATE INDEX IF NOT EXISTS message_ack_code ON message_acks(code)")
             # A process restart must not silently restart radio transmissions.
             self.db.execute("UPDATE messages SET status='interrupted' WHERE status='sending'")
+
+    def save_trace(self, measurement):
+        with self.db:
+            self.db.execute("INSERT INTO traces VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                            (measurement["id"], measurement["tag"], json.dumps(measurement)))
+
+    def traces(self):
+        return [json.loads(row[0]) for row in self.db.execute("SELECT data FROM traces ORDER BY rowid DESC")]
 
     def save(self, kind, target, direction, text, timestamp, status, ack=None, reception=None, echo_key=None, sender_key=None):
         fingerprint = None
@@ -259,6 +294,11 @@ class Bridge:
         self.channels = store.get_meta("channels", [])
         self.contacts = store.get_meta("contacts", {})
         self.discovered = store.get_meta("discovered", {})
+        self.trace_timers = {}
+        for measurement in self.store.traces():
+            if measurement["status"] in ("sending", "waiting"):
+                measurement["status"] = "interrupted"
+                self.store.save_trace(measurement)
         self.info = {}
         self.device = {}
         self.stats = {}
@@ -288,7 +328,7 @@ class Bridge:
         return public(dict(status=self.status, error=self.error, host=self.host, port=self.port,
                            channels=self.channels, contacts=self.contacts, discovered=self.discovered, info=self.info,
                            device=self.device, stats=self.stats, events=list(self.events), last_hops=self.last_hops,
-                           repeaters=self.repeaters,
+                           repeaters=self.repeaters, traces=self.store.traces(), trace_limits=TRACE_LIMITS,
                            conversations=self.store.conversations(),
                            rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
                            scopes={"default": self.default_scope, "supported": self.scope_supported,
@@ -419,6 +459,7 @@ class Bridge:
             self.log(name, p)
         elif name == "DISCONNECTED":
             self.ready = False
+            self.interrupt_traces()
             self.invalidate_rooms()
             for task in self.pending_dms.values():
                 task.cancel()
@@ -430,6 +471,8 @@ class Bridge:
                 if self.store.record_repeater(*echo):
                     self.emit("message", {"repeater_echo": True})
             self.log(name, p)
+            if name == "TRACE_DATA":
+                self.receive_trace(p)
 
     def remember_discovery(self, name, payload):
         key = payload.get("public_key") or payload.get("pubkey") or payload.get("adv_key")
@@ -459,6 +502,88 @@ class Bridge:
         entry["contact"] = contact
         self.store.set_meta("discovered", self.discovered)
         self.changed()
+
+    def finish_trace(self, measurement, status):
+        timer = self.trace_timers.pop(measurement["id"], None)
+        if timer:
+            timer.cancel()
+        measurement["status"] = status
+        self.store.save_trace(measurement)
+        self.changed()
+
+    def interrupt_traces(self):
+        for measurement in self.store.traces():
+            if measurement["status"] in ("sending", "waiting"):
+                self.finish_trace(measurement, "interrupted")
+
+    def expire_trace(self, trace_id):
+        measurement = next((m for m in self.store.traces() if m["id"] == trace_id), None)
+        if measurement and measurement["status"] == "waiting":
+            self.finish_trace(measurement, "timeout")
+
+    def receive_trace(self, payload):
+        measurement = next((m for m in self.store.traces() if m["tag"] == payload.get("tag")
+                            and m["auth"] == payload.get("auth")), None)
+        if not measurement or measurement.get("received_at") or payload.get("flags") != measurement["flags"]:
+            return
+        nodes = payload.get("path", [])
+        if not isinstance(nodes, list) or len(nodes) > len(measurement["path"]) + 1:
+            return
+        # Match by position, never by hash: a repeater may occur multiple times.
+        for i, entry in enumerate(nodes):
+            if not isinstance(entry, dict):
+                return
+            expected = measurement["path"][i] if i < len(measurement["path"]) else None
+            if entry.get("hash") != expected:
+                return
+        values = [None] * (len(measurement["path"]) + 1)
+        for i, entry in enumerate(nodes):
+            snr = entry.get("snr")
+            if type(snr) in (int, float) and math.isfinite(snr) and -32 <= snr <= 31.75:
+                values[i] = snr
+        measurement.update(snrs=values, received_at=time.time())
+        self.finish_trace(measurement, "complete" if all(v is not None for v in values) else "partial")
+
+    async def trace(self, setting):
+        path = trace_path(setting, self.contacts)
+        async with self.lock:
+            self.require_ready()
+            if not callable(getattr(self.radio.commands, "send_trace", None)):
+                raise HTTPException(409, "Die Companion-Library unterstützt keine manuellen TRACE-Pfade.")
+            tags = {m["tag"] for m in self.store.traces()}
+            tag = secrets.randbits(32)
+            while tag in tags:
+                tag = secrets.randbits(32)
+            names = []
+            for hop in path:
+                matches = [c.get("adv_name") for k, c in self.contacts.items()
+                           if c.get("type") == 2 and k.startswith(hop)]
+                names.append(matches[0] if len(matches) == 1 else None)
+            measurement = dict(id=uuid.uuid4().hex, tag=tag, auth=0, flags=(1, 2, 4, 8).index(setting.hash_size),
+                               timestamp=time.time(), path=path, names=names, snrs=[None] * (len(path) + 1),
+                               status="sending", host=self.host, port=self.port,
+                               companion=self.info.get("public_key"), return_path=setting.return_path)
+            self.store.save_trace(measurement)
+            self.changed()
+            try:
+                result = await self.command("send_trace", 0, tag, measurement["flags"], ",".join(path))
+                if result.type != EventType.MSG_SENT:
+                    raise RuntimeError("TRACE wurde vom Companion nicht als gesendet bestätigt.")
+            except (RuntimeError, TimeoutError, ConnectionError) as exc:
+                current = next(m for m in self.store.traces() if m["id"] == measurement["id"])
+                if not current.get("received_at"):
+                    current["error"] = str(exc) or "Companion-Timeout; Sendestatus unbekannt"
+                    self.finish_trace(current, "unconfirmed")
+                raise
+            current = next(m for m in self.store.traces() if m["id"] == measurement["id"])
+            if current["status"] == "sending":
+                timeout = (result.payload or {}).get("suggested_timeout", 30000)
+                timeout = max(1, min(float(timeout) / 1000, 3600))
+                current.update(status="waiting", deadline=time.time() + timeout)
+                self.store.save_trace(current)
+                self.trace_timers[current["id"]] = asyncio.get_running_loop().call_later(timeout, self.expire_trace, current["id"])
+            self.changed()
+            return self.snapshot()
 
     async def discover(self):
         async with self.lock:
@@ -776,6 +901,7 @@ class Bridge:
                 self.log("CONNECTION_ERROR", {"message": self.error})
             finally:
                 self.ready = False
+                self.interrupt_traces()
                 self.invalidate_rooms()
                 await self.stop_dms()
                 if self.radio:
@@ -1089,6 +1215,12 @@ class Bridge:
             return {"id": mid, "status": status}
 
 
+class TraceInput(BaseModel):
+    path: list[str] = Field(min_length=1, max_length=63)
+    hash_size: Literal[1, 2, 4, 8] = 1
+    return_path: bool = False
+
+
 class MessageInput(BaseModel):
     kind: Literal["channel", "dm", "room"]
     target: str = Field(min_length=1, max_length=64)
@@ -1171,6 +1303,7 @@ def create_app(db_path=None, autoconnect=None):
         bridge.task.cancel()
         with suppress(asyncio.CancelledError):
             await bridge.task
+        bridge.interrupt_traces()
         await bridge.stop_dms()
         store.db.close()
 
@@ -1208,6 +1341,13 @@ def create_app(db_path=None, autoconnect=None):
             except (RuntimeError, TimeoutError) as exc:
                 raise HTTPException(502, str(exc) or "Companion-Timeout") from exc
         return bridge.snapshot()
+
+    @app.post("/api/trace")
+    async def trace(request: Request, setting: TraceInput):
+        try:
+            return await request.app.state.bridge.trace(setting)
+        except (RuntimeError, TimeoutError, ConnectionError) as exc:
+            raise HTTPException(502, f"TRACE nicht bestätigt: {str(exc) or 'Timeout'}") from exc
 
     @app.post("/api/discover")
     async def discover(request: Request):
