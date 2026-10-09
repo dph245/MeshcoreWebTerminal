@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { status: 'offline', channels: [], contacts: {}, events: [], stats: {}, info: {}, device: {} };
+const state = { status: 'offline', channels: [], contacts: {}, events: [], stats: {}, info: {}, device: {}, last_hops: {} };
 let activeTab = 'terminal', pausedEvents = [], scopeChannel = '';
 let selection = null, paused = false, sending = false, backendOnline = false, historyVersion = 0;
 let messageRows = [], olderAvailable = false, connectionError = false;
@@ -117,6 +117,7 @@ function applyState(data) {
   const info=[['Adresse',`${state.host}:${state.port}`],['Gerät',state.info.name||state.device.model||'—'],['Firmware',state.device.ver||'—'],['Frequenz',state.info.radio_freq ? `${state.info.radio_freq} MHz`:'—'],['Rauschpegel',state.stats.STATS_RADIO?.noise_floor!==undefined?`${state.stats.STATS_RADIO.noise_floor} dBm`:'—']];
   $('radio-info').replaceChildren(...info.map(([key,value])=>{const row=node('div');row.append(node('dt','',key),node('dd','',value));return row;}));
   updateConnection(); renderNav(); if(!paused) renderEvents();
+  renderLastHops();
   renderScopes();
   renderPathHash();
   renderMultiAcks();
@@ -366,6 +367,23 @@ $('default-scope-clear').onclick=()=>saveScope(null,'');
 $('channel-scope-mode').onchange=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';renderScopes();};
 $('channel-scope-input').oninput=()=>{channelScopeDirty=true;$('channel-scope-feedback').textContent='';};
 $('channel-scope-form').onsubmit=e=>{e.preventDefault();if(scopeChannel==='')return;const mode=$('channel-scope-mode').value;saveScope(scopeChannel,mode==='unscoped'?'*':mode==='region'?$('channel-scope-input').value:'');};
+function renderLastHops() {
+  const now=Date.now()/1000;
+  const entries=Object.entries(state.last_hops).filter(([,entry])=>entry.time>now-300&&entry.time<=now);
+  state.last_hops=Object.fromEntries(entries);
+  entries.sort(([a,x],[b,y])=>{
+    const xValid=Number.isFinite(x.snr), yValid=Number.isFinite(y.snr);
+    return (yValid-xValid)||(xValid&&yValid?y.snr-x.snr:0)||a.localeCompare(b);
+  });
+  $('last-hops').replaceChildren(...entries.map(([hash,entry])=>{
+    const row=node('tr');
+    row.append(node('td','',hash),node('td','',Number.isFinite(entry.snr)?entry.snr:'—'),node('td','',new Date(entry.time*1000).toLocaleTimeString('de-DE')));
+    return row;
+  }));
+  $('last-hops-empty').hidden=entries.length>0;
+}
+setInterval(renderLastHops,1000);
+
 function renderEvents() {
   const filter=$('event-filter').value;
   const events=(paused?pausedEvents:state.events).filter(e=>e.type==='RX_LOG_DATA'&&(filter==='all'||String(e.payload?.payload_type)===filter));
@@ -473,7 +491,14 @@ $('composer').onsubmit=async e=>{
 };
 const stream=new EventSource('/api/events');
 stream.addEventListener('state',e=>{const wasOnline=backendOnline;applyState(JSON.parse(e.data));if(selection&&!wasOnline)loadMessages();});
-stream.addEventListener('radio',e=>{const event=JSON.parse(e.data);state.events.push(event);state.events=state.events.slice(-300);if(!paused)renderEvents();});
+stream.addEventListener('radio',e=>{
+  const event=JSON.parse(e.data), hash=packetLastHop(event), p=event.payload||{};
+  if(/^(?:[0-9a-f]{2}){1,3}$/.test(hash)&&Number.isFinite(event.time)&&(!state.last_hops[hash]||event.time>=state.last_hops[hash].time)) {
+    state.last_hops[hash]={time:event.time,snr:p.snr??p.SNR};
+  }
+  renderLastHops();
+  state.events.push(event);state.events=state.events.slice(-300);if(!paused)renderEvents();
+});
 stream.addEventListener('message',e=>{
   const data=JSON.parse(e.data||'{}');
   if(data.conversations)state.conversations=data.conversations;
@@ -591,5 +616,27 @@ for(const [index,tab] of deviceTabs.entries()) {
     if(e.key==='Home')next=0;
     if(e.key==='End')next=deviceTabs.length-1;
     if(next!==undefined){e.preventDefault();showDeviceTab(deviceTabs[next]);$(deviceTabs[next]+'-nav').focus();}
+  };
+}
+
+const monitorTabs=['monitor-live','monitor-hops'];
+function showMonitorTab(tab) {
+  for(const name of monitorTabs) {
+    const selected=name===tab, button=$(name+'-nav');
+    $(name).hidden=!selected;
+    button.setAttribute('aria-selected',String(selected));
+    button.tabIndex=selected?0:-1;
+  }
+  renderLastHops();
+}
+for(const [index,tab] of monitorTabs.entries()) {
+  const button=$(tab+'-nav');
+  button.onclick=()=>showMonitorTab(tab);
+  button.onkeydown=e=>{
+    let next;
+    if(e.key==='ArrowRight'||e.key==='ArrowLeft')next=1-index;
+    if(e.key==='Home')next=0;
+    if(e.key==='End')next=1;
+    if(next!==undefined){e.preventDefault();showMonitorTab(monitorTabs[next]);$(monitorTabs[next]+'-nav').focus();}
   };
 }

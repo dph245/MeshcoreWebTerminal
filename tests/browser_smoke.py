@@ -143,7 +143,11 @@ with sync_playwright() as p:
     ]
     page.locator('#contacts button').click()
     expect(page.locator('#channel-scope-form')).to_be_hidden()
-    expect(page.locator('.message-path')).to_have_count(0)
+    expect(page.locator('.message-path')).to_have_text([
+        'Pfad: ab0012 → cd0034 → Du',
+        'Pfad: nicht übermittelt (Direct-Routing)',
+        'Pfad: direkt empfangen',
+        'Pfad: nicht verfügbar'])
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), 'Chat path mobile overflow'
     page.screenshot(path=str(output / 'chat-path-mobile.png'), full_page=True)

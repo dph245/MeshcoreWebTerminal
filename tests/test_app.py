@@ -1183,3 +1183,29 @@ def test_room_and_cli_logins_do_not_share_credentials(bridge):
         assert exc.value.status_code == 409
         b.invalidate_rooms()
     asyncio.run(scenario())
+
+
+def test_last_hops_window_survives_event_limit(bridge):
+    def packet(path, snr, **extra):
+        return dict(payload_type=5, route_type=1, path_len=1,
+                    path_hash_size=len(path)//2, path=path, snr=snr, **extra)
+
+    with patch('server.app.time.time', return_value=1000):
+        bridge.log('RX_LOG_DATA', packet('aabbcc', 9))
+        bridge.log('RX_LOG_DATA', packet('dd', -3))
+        for _ in range(305):
+            bridge.log('RAW_DATA', {})
+        assert len(bridge.events) == 300
+        assert bridge.snapshot()['last_hops']['aabbcc'] == {'time': 1000, 'snr': 9}
+    with patch('server.app.time.time', return_value=1010):
+        bridge.log('RX_LOG_DATA', packet('aabbcc', -5))
+        bridge.log('RX_LOG_DATA', {**packet('ee', 20), 'route_type': 2})
+        bridge.log('RX_LOG_DATA', {**packet('ff', 20), 'payload_type': 9})
+        bridge.log('RX_LOG_DATA', {**packet('aa', 20), 'path_len': 0, 'path': ''})
+        bridge.log('RX_LOG_DATA', {**packet('bb', 20), 'path_len': 2})
+        assert set(bridge.snapshot()['last_hops']) == {'aabbcc', 'dd'}
+        assert bridge.snapshot()['last_hops']['aabbcc']['snr'] == -5
+    with patch('server.app.time.time', return_value=1300):
+        assert set(bridge.snapshot()['last_hops']) == {'aabbcc'}
+    with patch('server.app.time.time', return_value=1310):
+        assert bridge.snapshot()['last_hops'] == {}

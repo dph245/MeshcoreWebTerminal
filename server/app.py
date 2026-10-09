@@ -270,6 +270,7 @@ class Bridge:
         self.recent_echoes = deque(maxlen=300)
         self.recent_scopes = deque(maxlen=300)
         self.events = deque(maxlen=300)
+        self.last_hops = {}
         self.acks = deque(maxlen=200)
         self.listeners = set()
         self.task = None
@@ -283,9 +284,10 @@ class Bridge:
         self.room_timestamps = {}
 
     def snapshot(self):
+        self.prune_last_hops()
         return public(dict(status=self.status, error=self.error, host=self.host, port=self.port,
                            channels=self.channels, contacts=self.contacts, discovered=self.discovered, info=self.info,
-                           device=self.device, stats=self.stats, events=list(self.events),
+                           device=self.device, stats=self.stats, events=list(self.events), last_hops=self.last_hops,
                            repeaters=self.repeaters,
                            conversations=self.store.conversations(),
                            rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
@@ -303,8 +305,20 @@ class Bridge:
     def changed(self):
         self.emit("state", self.snapshot())
 
+    def prune_last_hops(self):
+        cutoff = time.time() - 300
+        self.last_hops = {key: value for key, value in self.last_hops.items() if value["time"] > cutoff}
+
     def log(self, kind, payload):
         event = {"time": time.time(), "type": kind, "payload": public(payload)}
+        self.prune_last_hops()
+        p = event["payload"]
+        count, size, path = p.get("path_len"), p.get("path_hash_size"), p.get("path")
+        if (kind == "RX_LOG_DATA" and p.get("route_type") in (0, 1) and p.get("payload_type") != 9
+                and isinstance(count, int) and 1 <= count <= 63 and size in (1, 2, 3)
+                and isinstance(path, str) and len(path) == count * size * 2
+                and all(c in "0123456789abcdefABCDEF" for c in path)):
+            self.last_hops[path[-size * 2:].lower()] = {"time": event["time"], "snr": p.get("snr", p.get("SNR"))}
         if kind == "RX_LOG_DATA" and event["payload"].get("payload_type") == 5:
             event["payload"]["received_scope"] = packet_scope(
                 event["payload"], [self.default_scope, *self.channel_scopes.values()])

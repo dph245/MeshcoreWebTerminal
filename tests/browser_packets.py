@@ -137,6 +137,34 @@ with sync_playwright() as p:
         'Pfad: Dach (ab) → cd → abcdef → Du',
         'Pfad: nicht übermittelt'])
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.locator('#monitor-nav').click()
+    page.evaluate("window.originalNow=Date.now; Date.now=()=>2000000")
+    snapshot = {**state, 'last_hops': {
+        'aa': {'time': 1990, 'snr': -3}, 'bb': {'time': 1980, 'snr': 8},
+        'cc': {'time': 1700, 'snr': 20}, 'dd': {'time': 1995, 'snr': None}}}
+    page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', snapshot)
+    page.locator('#monitor-live-nav').focus()
+    page.keyboard.press('ArrowRight')
+    expect(page.locator('#monitor-hops-nav')).to_be_focused()
+    expect(page.locator('#monitor-live')).to_be_hidden()
+    expect(page.locator('#last-hops tr td:first-child')).to_have_text(['bb', 'aa', 'dd'])
+    page.locator('#monitor-live-nav').click()
+    page.locator('#pause').click()
+    page.locator('#event-filter').select_option('4')
+    page.locator('#monitor-hops-nav').click()
+    event = {'type': 'RX_LOG_DATA', 'time': 2000, 'payload': {
+        'payload_type': 5, 'route_type': 1, 'path_len': 1, 'path_hash_size': 1, 'path': 'BB', 'snr': -8}}
+    page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', event)
+    expect(page.locator('#last-hops tr td:first-child')).to_have_text(['aa', 'bb', 'dd'])
+    expect(page.locator('#last-hops tr td:nth-child(2)')).to_have_text(['-3', '-8', '—'])
+    for width in [1440, 390]:
+        page.set_viewport_size({'width': width, 'height': 900})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=f'/tmp/mesh-last-hops-{width}.png')
+    page.evaluate('Date.now=()=>2300000')
+    expect(page.locator('#last-hops tr')).to_have_count(0)
+    expect(page.locator('#last-hops-empty')).to_be_visible()
+    page.evaluate('Date.now=window.originalNow')
     assert not errors, errors
     browser.close()
 print('Packet browser checks passed: readable metadata, encrypted/unknown/raw packets, aliases, XSS, live updates, themes and mobile dialog.')

@@ -418,3 +418,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
   .headline-scope { width: 100%; margin-left: 0; }
   .headline-scope .scope-fields { flex-wrap: wrap; }
 }
+
+.last-hops-table { max-width: 540px; }
+.last-hops-table th:first-child, .last-hops-table th:nth-child(2) { width: 33%; }
+.last-hops-table th:nth-child(2), .last-hops-table td:nth-child(2) { text-align: right; }
+.last-hops-table th:last-child, .last-hops-table td:last-child { text-align: right; }
