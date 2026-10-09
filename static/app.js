@@ -469,6 +469,32 @@ stream.addEventListener('message',e=>{
 stream.onerror=()=>{backendOnline=false;connectionError=true;updateConnection();error('Der Webserver ist nicht erreichbar. Die Verbindung wird automatisch wiederhergestellt.');};
 showTab('terminal');renderNav();updateConnection();
 
+function renderCliReference() {
+  if(!$('cli-reference').open)return;
+  const role=state.contacts[$('repeater-target').value]?.type;
+  const query=$('cli-command-search').value.trim().toLocaleLowerCase('de');
+  const list=$('cli-command-list'), filter=JSON.stringify([role,query]);
+  if(list.dataset.filter===filter)return;
+  list.dataset.filter=filter;
+  const entries=meshcoreCliCommands.filter(entry=>
+    (!role||!entry.role||entry.role===role)&&
+    `${entry.commands.map(command=>command.syntax).join(' ')} ${entry.description}`.toLocaleLowerCase('de').includes(query));
+  list.replaceChildren(...entries.map(entry=>{
+    const row=node('tr'), syntax=node('td'), description=node('td','',entry.description);
+    for(const command of entry.commands) {
+      const line=node('div');
+      line.append(node('code','',command.syntax));
+      if(command.serial)line.append(node('span','cli-command-note','Nur Serial'));
+      syntax.append(line);
+    }
+    if(entry.role)description.append(node('span','cli-command-note',entry.role===2?'Nur Repeater':'Nur Roomserver'));
+    row.append(syntax,description);return row;
+  }));
+  $('cli-command-empty').hidden=entries.length>0;
+}
+$('cli-reference').ontoggle=renderCliReference;
+$('cli-command-search').oninput=renderCliReference;
+
 function renderRepeater() {
   const select=$('repeater-target'), previous=select.value;
   const entries=Object.entries(state.contacts).filter(([,c])=>[2,3].includes(c.type)&&!c.unknown)
@@ -477,6 +503,7 @@ function renderRepeater() {
   if(entries.some(([key])=>key===previous))select.value=previous;
   if(previous!==select.value) {$('repeater-password').value='';$('repeater-command').value='';$('repeater-feedback').textContent='';}
   if(!entries.length)select.append(node('option','','Keine gespeicherten Repeater / Roomserver'));
+  renderCliReference();
   const session=state.repeaters?.[select.value], status=session?.status||'disconnected';
   const blocked=!backendOnline||state.status!=='connected'||!entries.length||repeaterBusy||status==='logging_in';
   select.disabled=repeaterBusy;
@@ -529,5 +556,27 @@ for(const [index,tab] of ['terminal','monitor','device','mesh'].entries()) {
     if(e.key==='Home')next=0;
     if(e.key==='End')next=3;
     if(next!==undefined){e.preventDefault();showTab(tabs[next]);$(tabs[next]+'-nav').focus();}
+  };
+}
+
+const deviceTabs=['device-cli','channel-manager','contact-manager','device-companion','companion-settings'];
+function showDeviceTab(tab) {
+  for(const name of deviceTabs) {
+    const selected=name===tab, button=$(name+'-nav');
+    $(name).hidden=!selected;
+    button.setAttribute('aria-selected',String(selected));
+    button.tabIndex=selected?0:-1;
+  }
+}
+for(const [index,tab] of deviceTabs.entries()) {
+  const button=$(tab+'-nav');
+  button.onclick=()=>showDeviceTab(tab);
+  button.onkeydown=e=>{
+    let next;
+    if(e.key==='ArrowRight')next=(index+1)%deviceTabs.length;
+    if(e.key==='ArrowLeft')next=(index+deviceTabs.length-1)%deviceTabs.length;
+    if(e.key==='Home')next=0;
+    if(e.key==='End')next=deviceTabs.length-1;
+    if(next!==undefined){e.preventDefault();showDeviceTab(deviceTabs[next]);$(deviceTabs[next]+'-nav').focus();}
   };
 }

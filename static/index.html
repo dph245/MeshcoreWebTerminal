@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101614"><title>MeshCore · Web Terminal</title>
   <script src="/theme.js"></script>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/packets.js" defer></script><script src="/app.js" defer></script>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"><script src="/packets.js" defer></script><script src="/cli-commands.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
   <main>
@@ -19,6 +19,14 @@
       <article class="panel event-panel"><div class="panel-heading"><div class="inline-heading"><h2>Live-Pakete</h2><span id="event-count" class="count">0</span></div><div class="event-controls"><select id="event-filter" aria-label="Ereignisse filtern"><option value="all">Alle Pakettypen</option><option value="5">Channel</option><option value="2">Direktnachricht</option><option value="4">Advert</option><option value="3">ACK</option><option value="11">Steuerpaket</option></select><button id="pause" class="button compact">Pausieren</button></div></div><div class="table-wrap"><table><thead><tr><th>ZEIT</th><th>PAKETTYP</th><th>ABSENDER / INHALT</th><th>RSSI · dBm</th><th>SNR · dB</th></tr></thead><tbody id="events"></tbody></table><div id="events-empty" class="empty-state"><p>Noch keine passenden Funkpakete empfangen.</p></div></div></article>
     </section>
     <section id="device" class="workspace" role="tabpanel" aria-labelledby="device-nav" hidden>
+      <nav class="tabs device-tabs" role="tablist" aria-label="Device-Bereiche">
+        <button id="device-cli-nav" role="tab" aria-controls="device-cli" aria-selected="true">Geräte-CLI</button>
+        <button id="channel-manager-nav" role="tab" aria-controls="channel-manager" aria-selected="false" tabindex="-1">Channels verwalten</button>
+        <button id="contact-manager-nav" role="tab" aria-controls="contact-manager" aria-selected="false" tabindex="-1">Kontakte verwalten</button>
+        <button id="device-companion-nav" role="tab" aria-controls="device-companion" aria-selected="false" tabindex="-1">Companion</button>
+        <button id="companion-settings-nav" role="tab" aria-controls="companion-settings" aria-selected="false" tabindex="-1">Einstellungen</button>
+      </nav>
+      <section id="device-cli" role="tabpanel" aria-labelledby="device-cli-nav">
       <article class="panel repeater-panel">
         <div class="panel-heading"><h2>Geräte-CLI</h2><span id="repeater-status" class="pill" role="status">Nicht angemeldet</span></div>
         <form id="repeater-login-form" class="scope-form"><div class="scope-fields">
@@ -26,15 +34,32 @@
           <input id="repeater-password" type="password" placeholder="Geräte-Passwort" aria-label="Geräte-Passwort" autocomplete="off">
           <button id="repeater-login" class="button" type="submit">Anmelden</button><button id="repeater-logout" class="button" type="button">Abmelden</button>
         </div></form>
-        <form id="repeater-command-form" class="scope-form"><div class="scope-fields">
-          <input id="repeater-command" placeholder="CLI-Kommando, z. B. get name" aria-label="CLI-Kommando" autocomplete="off" spellcheck="false" required>
-          <button id="repeater-send" class="button" type="submit">Kommando senden</button>
-        </div><p>Remote-CLI für gespeicherte Repeater und Roomserver. Einmaliger Versand; Antworten bleiben nur in dieser Serversitzung.</p></form>
-        <p id="repeater-feedback" class="channel-feedback" role="status"></p>
-        <pre id="repeater-replies" class="repeater-replies" aria-label="Repeater-Antworten" role="log" aria-live="polite">Noch keine CLI-Antwort empfangen.</pre>
+        <div class="repeater-workspace">
+          <div class="repeater-commands">
+            <form id="repeater-command-form" class="scope-form"><div class="scope-fields">
+              <input id="repeater-command" placeholder="CLI-Kommando, z. B. get name" aria-label="CLI-Kommando" autocomplete="off" spellcheck="false" required>
+              <button id="repeater-send" class="button" type="submit">Kommando senden</button>
+            </div><p>Remote-CLI für gespeicherte Repeater und Roomserver. Einmaliger Versand; Antworten bleiben nur in dieser Serversitzung.</p></form>
+            <details id="cli-reference">
+              <summary>Kommandoliste</summary>
+              <p class="cli-reference-note"><a href="https://docs.meshcore.io/cli_commands/" target="_blank" rel="noopener noreferrer">MeshCore CLI-Dokumentation</a> · Stand 09.10.2026. Verfügbarkeit je nach Firmware und Hardware. „Nur Serial“ ist nicht über diese Remote-CLI verfügbar.</p>
+              <label class="search"><input id="cli-command-search" type="search" placeholder="Kommando suchen …" aria-label="CLI-Kommandos durchsuchen"></label>
+              <div class="cli-reference-scroll" role="region" aria-label="CLI-Kommandoliste" tabindex="0">
+                <table class="cli-reference-table"><thead><tr><th scope="col">Kommando</th><th scope="col">Beschreibung</th></tr></thead><tbody id="cli-command-list"></tbody></table>
+              </div>
+              <p id="cli-command-empty" class="cli-reference-note" hidden>Keine passenden Kommandos.</p>
+            </details>
+            <p id="repeater-feedback" class="channel-feedback" role="status"></p>
+          </div>
+          <section class="repeater-output" aria-labelledby="repeater-output-heading">
+            <div class="panel-heading"><h2 id="repeater-output-heading">Antworten</h2></div>
+            <pre id="repeater-replies" class="repeater-replies" aria-label="Repeater-Antworten" role="log" aria-live="polite">Noch keine CLI-Antwort empfangen.</pre>
+          </section>
+        </div>
       </article>
-      <details id="channel-manager"><summary>Channels verwalten</summary><article class="panel channel-manager"><div class="panel-heading"><h2>Hashtag-Channels</h2><span id="channel-capacity" class="pill"></span></div><form id="add-channel-form" class="scope-form"><label for="new-channel-name">Channel-Name</label><div class="scope-fields"><input id="new-channel-name" placeholder="#mein-channel" required maxlength="100" autocomplete="off"><button id="add-channel" type="submit" class="button">Im Companion hinzufügen</button></div><p>Hashtag-Channels werden mit dem aus ihrem Namen abgeleiteten Schlüssel auf dem Companion gespeichert. Groß- und Kleinschreibung bleibt erhalten.</p></form><div id="managed-channels" class="managed-channels"></div><p id="channel-feedback" class="channel-feedback" role="status"></p></article></details>
-      <details id="contact-manager"><summary>Kontakte verwalten</summary><article class="panel channel-manager">
+      </section>
+      <section id="channel-manager" role="tabpanel" aria-labelledby="channel-manager-nav" hidden><article class="panel channel-manager"><div class="panel-heading"><h2>Hashtag-Channels</h2><span id="channel-capacity" class="pill"></span></div><form id="add-channel-form" class="scope-form"><label for="new-channel-name">Channel-Name</label><div class="scope-fields"><input id="new-channel-name" placeholder="#mein-channel" required maxlength="100" autocomplete="off"><button id="add-channel" type="submit" class="button">Im Companion hinzufügen</button></div><p>Hashtag-Channels werden mit dem aus ihrem Namen abgeleiteten Schlüssel auf dem Companion gespeichert. Groß- und Kleinschreibung bleibt erhalten.</p></form><div id="managed-channels" class="managed-channels"></div><p id="channel-feedback" class="channel-feedback" role="status"></p></article></section>
+      <section id="contact-manager" role="tabpanel" aria-labelledby="contact-manager-nav" hidden><article class="panel channel-manager">
         <div class="panel-heading"><h2>Kontakte verwalten</h2><span id="managed-contact-count" class="count">0</span></div>
         <form id="add-contact-form" class="scope-form">
           <label for="new-contact-name">Name</label>
@@ -46,16 +71,19 @@
         <label class="search contact-manager-search"><input id="managed-contact-search" placeholder="Name oder Geräteschlüssel suchen …" aria-label="Gespeicherte Kontakte suchen"></label>
         <div id="managed-contacts" class="managed-channels"></div>
         <p id="contact-feedback" class="channel-feedback" role="status"></p>
-      </article></details>
-      <details id="companion-settings"><summary>Companion und Einstellungen</summary>
+      </article></section>
+      <section id="device-companion" role="tabpanel" aria-labelledby="device-companion-nav" hidden>
             <div class="sidebar-bottom"><span class="device-icon">▣</span><div><strong id="device-name">Dein Companion</strong><small id="endpoint">192.168.88.14:5000</small></div><span id="device-dot" class="status-dot"></span></div><button id="refresh" class="button compact">Vom Companion neu laden</button>
-        <article class="panel radio-panel"><div class="panel-heading"><h2>Companion</h2><span class="pill">RADIO</span></div><dl id="radio-info"><div><dt>Adresse</dt><dd>192.168.88.14:5000</dd></div><div><dt>Gerät</dt><dd>Warte auf Verbindung</dd></div></dl><div class="radio-note">Der Monitor zeigt die vom Companion gemeldeten Pakete und Signalwerte.</div></article><div class="monitor-settings">
+        <article class="panel radio-panel"><div class="panel-heading"><h2>Companion</h2><span class="pill">RADIO</span></div><dl id="radio-info"><div><dt>Adresse</dt><dd>192.168.88.14:5000</dd></div><div><dt>Gerät</dt><dd>Warte auf Verbindung</dd></div></dl><div class="radio-note">Der Monitor zeigt die vom Companion gemeldeten Pakete und Signalwerte.</div></article>
+      </section>
+      <section id="companion-settings" role="tabpanel" aria-labelledby="companion-settings-nav" hidden>
+      <div class="monitor-settings">
       <article class="panel scope-panel"><div class="panel-heading"><h2>Empfangsbestätigungen</h2><span id="multi-acks-current" class="pill">Nicht verfügbar</span></div><form id="multi-acks-form" class="scope-form"><div class="scope-fields"><label class="ack-toggle" for="multi-acks-enabled"><input id="multi-acks-enabled" type="checkbox" role="switch"> Zusätzliches ACK senden</label><button id="multi-acks-save" class="button" type="submit">Im Companion speichern</button></div><p>Bestätigt eingehende Direktnachrichten bei bekannter direkter Rückroute zusätzlich. Das hilft dem Absender, kostet aber etwas mehr Funkzeit. Für deine ausgehenden DMs zählt die Einstellung der Gegenstelle.</p><span id="multi-acks-feedback" role="status"></span></form></article>
       <article class="panel scope-panel"><div class="panel-heading"><h2>Pfad-Hash beim Senden</h2><span id="path-hash-current" class="pill">Nicht verfügbar</span></div><form id="path-hash-form" class="scope-form"><label for="path-hash-bytes">Hash-Länge pro Hop</label><div class="scope-fields"><select id="path-hash-bytes"><option value="" disabled>Bitte wählen</option><option value="1">1 Byte</option><option value="2">2 Byte</option><option value="3">3 Byte</option></select><button id="path-hash-save" class="button" type="submit">Im Companion speichern</button></div><p>Gilt für ausgehende Flood-Pakete. Längere Hashes verringern Verwechslungen von Knoten, benötigen aber mehr Platz pro Hop. Bestehende direkte Routen behalten ihre eigene Hash-Länge.</p><span id="path-hash-feedback" role="status"></span></form></article>
       <article class="panel scope-panel"><div class="panel-heading"><h2>Standard-Scope</h2><span id="default-scope-current" class="pill">Wird geladen …</span></div><form id="default-scope-form" class="scope-form"><label for="default-scope-input">Region für Flood-Verkehr</label><div class="scope-fields"><input id="default-scope-input" placeholder="#region" autocomplete="off" maxlength="100"><button id="default-scope-save" class="button" type="submit">Im Companion speichern</button><button id="default-scope-clear" class="button" type="button">Ohne Scope</button></div><p>Gilt für Flood-Pakete, einschließlich DMs ohne bekannte Route und Adverts. Ein Channel kann einen eigenen Scope verwenden. Leer = ohne Scope.</p><span id="default-scope-feedback" role="status"></span></form></article>
       </div>    <label class="theme-picker" for="theme-select"><span>Design</span><select id="theme-select"><option value="dark-green">Dark Green</option><option value="dark-blue">Dark Blue</option><option value="light">Light</option></select></label>
 
-      </details>
+      </section>
     </section>
     <section id="mesh" class="workspace" role="tabpanel" aria-labelledby="mesh-nav" hidden>
       <article class="panel discovery-panel">

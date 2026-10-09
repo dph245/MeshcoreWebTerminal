@@ -36,14 +36,41 @@ with sync_playwright() as p:
     page.goto('http://mesh.test/')
     page.locator('#device-nav').click()
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+    expect(page.locator('#cli-command-search')).to_be_hidden()
+    page.locator('#cli-reference > summary').click()
+    expect(page.locator('#cli-command-list')).to_contain_text('neighbors')
+    expect(page.locator('#cli-command-list')).to_contain_text('get allow.read.only')
     state['contacts'][KEY] = {'type': 2, 'adv_name': 'Relay', 'public_key': KEY}
     state['repeaters'] = {}
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+    expect(page.locator('#cli-command-list')).not_to_contain_text('get allow.read.only')
+    page.locator('#cli-command-search').fill('SET FREQ')
+    expect(page.locator('#cli-command-list tr')).to_have_count(1)
+    expect(page.locator('#cli-command-list')).to_contain_text('set freq <frequency>')
+    expect(page.locator('#cli-command-list td:first-child > div').filter(has_text='set freq')).to_contain_text('Nur Serial')
+    expect(page.locator('#cli-command-list td:first-child > div').filter(has_text='get freq')).not_to_contain_text('Nur Serial')
+    page.locator('#cli-command-search').fill('kein-solches-kommando')
+    expect(page.locator('#cli-command-empty')).to_be_visible()
+    page.locator('#cli-command-search').fill('')
+    room_key = 'cd' * 32
+    state['contacts'][room_key] = {'type': 3, 'adv_name': 'Room', 'public_key': room_key}
+    page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+    page.locator('#repeater-target').select_option(room_key)
+    expect(page.locator('#cli-command-list')).to_contain_text('get allow.read.only')
+    expect(page.locator('#cli-command-list')).not_to_contain_text('discover.neighbors')
+    expect(page.locator('#cli-command-list')).not_to_contain_text('powersaving')
+    page.set_viewport_size({'width': 390, 'height': 844})
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path='/tmp/mesh-cli-reference-mobile.png', full_page=True)
+    assert requests == [], requests  # Browsing the reference sends no commands.
+    page.locator('#repeater-target').select_option(KEY)
+    page.locator('#cli-reference > summary').click()
     expect(page.locator('#repeater-send')).to_be_disabled()
     page.locator('#repeater-password').fill('secret')
     page.locator('#repeater-login').click()
     expect(page.locator('#repeater-password')).to_have_value('')
     assert requests[-1] == ('api/repeaters', {'target': KEY, 'action': 'login', 'value': 'secret'})
+    expect(page.locator('#repeater-login')).to_be_enabled()  # Wait for the login POST to finish before simulating its confirmation.
     state['repeaters'][KEY] = {'status': 'logged_in', 'replies': []}
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
     page.locator('#repeater-command').fill('get name')

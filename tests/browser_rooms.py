@@ -53,7 +53,7 @@ with sync_playwright() as p:
 
     refresh()
     page.locator('#device-nav').click()
-    page.locator('#companion-settings').evaluate('(el)=>el.open=true')
+    page.locator('#companion-settings-nav').click()
     expect(page.locator('#multi-acks-current')).to_have_text('Aus')
     page.locator('#multi-acks-enabled').check()
     refresh()  # A live update must preserve the user's unsaved choice.

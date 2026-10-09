@@ -319,6 +319,10 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 .event-panel .empty-state p { max-width: none; }
 
 .repeater-panel { margin-top: 10px; }
+.repeater-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.repeater-workspace > * { min-width: 0; }
+.repeater-output .repeater-replies { max-height: 60dvh; }
+@media(max-width:700px) { .repeater-workspace { grid-template-columns: minmax(0, 1fr); gap: 12px; } }
 .repeater-replies { margin: 0 0 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--mono); color: var(--text); }
 .repeater-panel .scope-fields input#repeater-command { max-width: 640px; font-family: var(--mono); }
 .repeater-panel select { max-width: 100%; }
@@ -340,7 +344,7 @@ main { margin: 0; min-height: 100dvh; }
 #terminal .sidebar { position: static; width: 230px; flex: 0 0 230px; padding: 12px 10px; display: flex; }
 .terminal-content { flex: 1; min-width: 0; }
 #terminal-empty { align-items: flex-start; padding: 24px; }
-#channel-manager, #contact-manager { margin: 12px 18px; }
+#channel-manager, #contact-manager { margin: 0; }
 
 .chat { height: calc(100dvh - 51px); }
 .chat-heading { padding: 12px 18px; }
@@ -357,7 +361,19 @@ main { margin: 0; min-height: 100dvh; }
 .event-panel table { min-width: 660px; }
 .event-description > span { -webkit-line-clamp: 2; }
 .packet-open { display: inline-block; padding-top: 2px; }
-#companion-settings { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 24px; }
+.device-tabs { flex-wrap: wrap; justify-content: flex-start; gap: 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.device-tabs button { padding: 10px 4px; }
+#cli-reference { margin: 8px 0 16px; }
+.cli-reference-note { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.cli-reference-note a { text-decoration: underline; text-underline-offset: 3px; }
+#cli-reference .search { max-width: 480px; margin: 12px 0; }
+.cli-reference-scroll { max-height: 360px; overflow: auto; }
+.cli-reference-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cli-reference-table th:first-child { width: 45%; }
+.cli-reference-table th:nth-child(2) { width: 55%; }
+.cli-reference-table td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; color: var(--text); }
+.cli-reference-table code { font: 12px/1.6 var(--mono); }
+.cli-command-note { display: block; font: 11px/1.5 ui-sans-serif, system-ui, sans-serif; color: var(--muted); }
 summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; }
 .monitor-settings { display: block; }
 .monitor-settings .scope-panel { margin: 18px 0; }
@@ -383,7 +399,7 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
   .sidebar-bottom { display: flex; }
 }
 
-#device > details { margin: 12px 0; }
+
 
 #terminal .contacts { flex: 0 1 auto; max-height: 35vh; }
 .device-identity summary { color: var(--text); font-weight: 600; padding: 0; }

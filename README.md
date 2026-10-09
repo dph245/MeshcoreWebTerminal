@@ -154,6 +154,12 @@ automatische Wiederholung. Die verfügbaren Kommandos und Berechtigungen hängen
 von der Geräte-Firmware ab; siehe die
 [MeshCore CLI-Referenz](https://github.com/meshcore-dev/MeshCore/blob/main/docs/cli_commands.md).
 
+Die aufklappbare **Kommandoliste** enthält eine lokal hinterlegte, durchsuchbare
+Referenz mit Syntax und deutschen Kurzbeschreibungen (Stand 09.10.2026,
+[MeshCore-Dokumentation](https://docs.meshcore.io/cli_commands/)). Sie berücksichtigt
+den ausgewählten Gerätetyp und kennzeichnet rein serielle Befehle. Ohne ausgewähltes
+Gerät werden beide Typen angezeigt. Die Liste führt keine Kommandos aus.
+
 Passwörter und gesendete Kommandos werden nicht im Anwendungsverlauf gespeichert.
 Die letzten 50 CLI-Antworten je Gerät bleiben im Serverspeicher und werden beim
 Abmelden gelöscht. Alle verbundenen Webclients teilen diese Sitzungen. Nach einer

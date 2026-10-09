@@ -48,7 +48,7 @@ with sync_playwright() as p:
 
     refresh()
     page.locator('#device-nav').click()
-    page.locator('#contact-manager > summary').click()
+    page.locator('#contact-manager-nav').click()
     expect(page.locator('#contact-manager')).to_be_visible()
     page.locator('#new-contact-name').fill('<Alice>')
     page.locator('#new-contact-key').fill(KEY.upper())
