@@ -47,6 +47,9 @@ with sync_playwright() as p:
     expect(page.locator('#events')).to_contain_text('Absender / Inhalt nicht verfügbar')
     expect(page.locator('#events')).to_contain_text('Dach-Repeater')
     expect(page.locator('#events')).not_to_contain_text('Binäre Anwendungsdaten')
+    expect(page.locator('#events tr').filter(has_text='Hallo Mesh').locator('td').nth(3)).to_have_text('cd')
+    expect(page.locator('#events tr').filter(has_text='Dach-Repeater').locator('td').nth(3)).to_have_text('Direkt')
+    expect(page.locator('#events tr').filter(has_text='Direktnachricht').locator('td').nth(3)).to_have_text('—')
     page.locator('#events tr').filter(has_text='Hallo Mesh').get_by_role('button').click()
     expect(page.locator('#packet-message')).to_have_text(fixtures[0]['message'])
     expect(page.locator('#packet-fields')).to_contain_text('Dach (ab) → cd')
@@ -66,6 +69,20 @@ with sync_playwright() as p:
         page.screenshot(path=f'/tmp/mesh-packet-{theme}.png')
     page.keyboard.press('Escape')
     expect(page.locator('#packet-dialog')).not_to_be_visible()
+    for payload, expected in [
+        ({'route_type': 0, 'path_len': 2, 'path_hash_size': 2, 'path': 'aabbCCDD'}, 'ccdd'),
+        ({'route_type': 1, 'path_len': 2, 'path_hash_size': 3, 'path': 'aabbccDDEEFF'}, 'ddeeff'),
+        ({'route_type': 1, 'path_len': 2, 'path_hash_size': 3, 'path': 'aabbccdd'}, '—'),
+        ({'route_type': 1, 'path_len': 1, 'path_hash_size': 4, 'path': 'aabbccdd'}, '—'),
+        ({'route_type': 1, 'path_len': 1, 'path_hash_size': 1, 'path': 'zz'}, '—'),
+        ({'route_type': 3, 'path_len': 0}, '—'),
+        ({'route_type': 1, 'payload_type': 9, 'path_len': 1, 'path_hash_size': 1, 'path': 'ab'}, '—'),
+        ({'route_type': 1}, '—'),
+    ]:
+        event = {'type': 'RX_LOG_DATA', 'time': 1700000020, 'payload': {'payload_type': 5, **payload}}
+        page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', event)
+        expect(page.locator('#events tr').first.locator('td').nth(3)).to_have_text(expected)
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     page.locator('#events tr').filter(has_text='Direktnachricht').get_by_role('button').click()
     expect(page.locator('#packet-fields')).to_contain_text('Routing-Pfad')
     expect(page.locator('#packet-fields')).not_to_contain_text('Empfangspfad')

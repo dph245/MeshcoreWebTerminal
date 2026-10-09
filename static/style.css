@@ -358,7 +358,9 @@ main { margin: 0; min-height: 100dvh; }
 .workspace .scope-form p { max-width: 70ch; }
 .workspace .channel-feedback { margin: 12px 0; }
 .workspace .table-wrap { max-height: calc(100dvh - 120px); }
-.event-panel table { min-width: 660px; }
+.event-panel table { min-width: 750px; }
+.event-panel th:nth-child(4) { width: 90px; }
+.event-panel th:nth-child(5), .event-panel th:nth-child(6) { width: 70px; }
 .event-description > span { -webkit-line-clamp: 2; }
 .packet-open { display: inline-block; padding-top: 2px; }
 .device-tabs { flex-wrap: wrap; justify-content: flex-start; gap: 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }

@@ -374,14 +374,14 @@ function renderEvents() {
   $('events').replaceChildren(...events.slice().reverse().map(e=>{
     const p=e.payload||{}, row=node('tr');
     const description=describePacket(e);
-    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), description.type, packetPreview(e), p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
+    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), description.type, packetPreview(e), packetLastHop(e), p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
     values.forEach((value,index)=>{
       const cell=node('td',index===2?'event-description':'',index===0?undefined:value);
       if(index===0){
         const button=node('button','packet-open',value);
         button.setAttribute('aria-label',`${value} · ${description.type} · Details ansehen`);
         button.type='button';button.onclick=()=>showPacket(e);cell.append(button);
-      }else cell.title=String(value);
+      }else cell.title=index===3?(value==='—'?'Last Hop nicht bestimmbar':value==='Direkt'?'Direkt empfangen · kein Repeater im Pfad':`Letzter Hop im Empfangspfad: ${value}`):String(value);
       row.append(cell);
     });
     return row;

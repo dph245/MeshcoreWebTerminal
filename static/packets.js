@@ -7,6 +7,18 @@ function hopName(hash) {
   return matches.length===1 && matches[0][1].adv_name ? `${matches[0][1].adv_name} (${hash})` : hash;
 }
 
+function packetLastHop(event) {
+  const p=event.payload||{};
+  // Direct routes describe the remaining route, not the received forwarding path.
+  // Trace packets use a different path encoding.
+  if(event.type!=='RX_LOG_DATA'||![0,1].includes(p.route_type)||p.payload_type===9)return '—';
+  if(!Number.isInteger(p.path_len)||p.path_len<0||p.path_len>63)return '—';
+  if(p.path_len===0)return 'Direkt';
+  const size=p.path_hash_size;
+  if(![1,2,3].includes(size)||typeof p.path!=='string'||p.path.length!==p.path_len*size*2||!/^[0-9a-f]+$/i.test(p.path))return '—';
+  return p.path.slice(-size*2).toLowerCase();
+}
+
 function receivedScopeLabel(p, radio) {
   if(!radio)return 'Nicht übermittelt · nur im Funkpaket verfügbar';
   const scope=p.received_scope;
