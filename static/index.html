@@ -60,6 +60,7 @@
               </div>
               <p id="cli-command-empty" class="cli-reference-note" hidden>Keine passenden Kommandos.</p>
             </details>
+            <details><summary>Routing</summary><p id="repeater-routing-text"></p></details>
             <p id="repeater-feedback" class="channel-feedback" role="status"></p>
           </div>
           <section class="repeater-output" aria-labelledby="repeater-output-heading">
@@ -141,6 +142,7 @@
       <p id="terminal-empty" class="empty-state">Channel, Kontakt oder Roomserver auswählen.</p>
     <section id="chat" class="chat" hidden>
       <div class="chat-heading"><div class="chat-avatar" id="chat-icon">#</div><div><h1 id="chat-title">Channel</h1><p id="chat-subtitle">MeshCore Channel</p></div><form id="channel-scope-form" class="scope-form headline-scope" hidden><label for="channel-scope-mode">Channel-Scope <span id="channel-scope-current"></span></label><div class="scope-fields"><select id="channel-scope-mode"><option value="default">Companion-Standard</option><option value="unscoped">Ohne Scope</option><option value="region">Eigene Region</option></select><input id="channel-scope-input" placeholder="#region" aria-label="Channel-Region" autocomplete="off" maxlength="100" hidden><button id="channel-scope-save" class="button" type="submit">Speichern</button></div><span id="channel-scope-feedback" role="status"></span></form></div>
+      <details id="chat-routing"><summary>Routing</summary><p id="chat-routing-text"></p></details>
       <form id="room-login-form" class="scope-form channel-scope" hidden>
         <label for="room-password">Room-Passwort <span id="room-status" role="status"></span></label>
         <div class="scope-fields"><input id="room-password" type="password" autocomplete="off" placeholder="Passwort · leer für Lesezugang"><button id="room-login" class="button" type="submit">Anmelden / synchronisieren</button><button id="room-logout" class="button" type="button">Lokal abmelden</button></div>
@@ -155,6 +157,22 @@
   <dialog id="packet-dialog" aria-labelledby="packet-title">
     <div class="panel-heading"><h2 id="packet-title">Funkpaket</h2><form method="dialog"><button class="button compact" autofocus>Schließen</button></form></div>
     <div class="packet-body"><p id="packet-summary"></p><dl id="packet-fields"></dl><pre id="packet-message" hidden></pre><details><summary>Technische Rohdaten</summary><pre id="packet-raw"></pre></details></div>
+  </dialog>
+<dialog id="route-dialog" aria-labelledby="route-title">
+    <h2 id="route-title">Route</h2>
+    <form id="route-form">
+      <label>Routingmodus <select id="route-mode"><option>AUTO</option><option>MANUAL</option></select></label>
+      <div id="route-fields">
+        <label>Hash-Länge <select id="route-size"><option value="1">1 Byte</option><option value="2">2 Bytes</option><option value="3">3 Bytes</option></select></label>
+        <ol id="route-hops"></ol>
+        <button type="button" id="route-add" class="button">Hop hinzufügen</button>
+      </div>
+      <p id="route-preview" class="trace-path"></p><p id="route-validation" role="status"></p>
+      <p id="route-current"></p>
+      <button id="route-save" class="button" type="submit">Speichern</button>
+      <button id="route-close" class="button" type="button">Schließen</button>
+      <p id="route-feedback" role="status"></p>
+    </form>
   </dialog>
 </body>
 </html>

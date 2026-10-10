@@ -171,3 +171,16 @@ Gerätesitzung kann eine erneute Anmeldung nötig sein.
 Unter „Manueller TRACE“ lassen sich Repeater-Pfade bearbeiten und einmalig messen,
 optional mit gespiegeltem Rückweg. Messungen bleiben mit Zeitstempel, vollständigem
 Pfad und SNR je Hop gespeichert. [Bedienung, API-Grenzen und Tests](docs/manual-trace.md).
+
+### Statische DIRECT-Routen
+
+Unter **Device → Kontakte verwalten → Route** lassen sich persistente manuelle
+DIRECT-Routen für Chat, Repeater und Roomserver hinterlegen. AUTO bleibt Standard;
+MANUAL aktiviert und prüft den gespeicherten Pfad vor jedem adressierten Versand
+und verzichtet auf den automatischen FLOOD-Fallback. Der Editor unterstützt
+1-/2-/3-Byte-Hashes, wiederholte Repeater und Kollisionswarnungen.
+
+[Bedienung, Tests und Companion-Grenzen](docs/static-direct-routes.md): insbesondere
+sind autonome Room-Synchronisation und Rückwege nicht statisch erzwingbar; die
+Companion-API bietet kein atomares Setzen-und-Senden und bestätigt keine gesendete
+Hopfolge.

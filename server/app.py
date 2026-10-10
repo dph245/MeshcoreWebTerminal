@@ -162,6 +162,7 @@ class Store:
             CREATE INDEX IF NOT EXISTS conversation ON messages(kind, target, id);
             CREATE TABLE IF NOT EXISTS traces (id TEXT PRIMARY KEY, tag INTEGER UNIQUE, data TEXT);
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS manual_routes (target TEXT PRIMARY KEY, data TEXT NOT NULL);
         """)
         # Additive migration: existing chat history stays intact.
         if "reception" not in {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}:
@@ -173,13 +174,24 @@ class Store:
             self.db.execute("CREATE INDEX IF NOT EXISTS message_echo ON messages(echo_key)")
             self.db.execute("CREATE TABLE IF NOT EXISTS repeater_receipts (message_id INTEGER, hop TEXT, PRIMARY KEY(message_id, hop))")
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}
-            for name, definition in (("tx_route", "TEXT"), ("tx_attempt", "INTEGER"), ("sender_key", "TEXT")):
+            for name, definition in (("tx_route", "TEXT"), ("tx_attempt", "INTEGER"), ("sender_key", "TEXT"), ("tx_mode", "TEXT"), ("tx_path", "TEXT")):
                 if name not in columns:
                     self.db.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
             self.db.execute("CREATE TABLE IF NOT EXISTS message_acks (message_id INTEGER, code TEXT, PRIMARY KEY(message_id, code))")
             self.db.execute("CREATE INDEX IF NOT EXISTS message_ack_code ON message_acks(code)")
             # A process restart must not silently restart radio transmissions.
             self.db.execute("UPDATE messages SET status='interrupted' WHERE status='sending'")
+
+    def routes(self):
+        return {row[0]: json.loads(row[1]) for row in self.db.execute("SELECT target,data FROM manual_routes")}
+
+    def set_route(self, target, route):
+        with self.db:
+            if route is None:
+                self.db.execute("DELETE FROM manual_routes WHERE target=?", (target,))
+            else:
+                self.db.execute("INSERT INTO manual_routes VALUES(?,?) ON CONFLICT(target) DO UPDATE SET data=excluded.data",
+                                (target, json.dumps(route)))
 
     def save_trace(self, measurement):
         with self.db:
@@ -322,6 +334,9 @@ class Bridge:
         self.room_login_task = None
         self.room_sends = {}
         self.room_timestamps = {}
+        self.dm_targets = {}
+        self.route_status = {}
+        self.path_revision = 0
 
     def snapshot(self):
         self.prune_last_hops()
@@ -329,7 +344,7 @@ class Bridge:
                            channels=self.channels, contacts=self.contacts, discovered=self.discovered, info=self.info,
                            device=self.device, stats=self.stats, events=list(self.events), last_hops=self.last_hops,
                            repeaters=self.repeaters, traces=self.store.traces(), trace_limits=TRACE_LIMITS,
-                           conversations=self.store.conversations(),
+                           conversations=self.store.conversations(), routes=self.store.routes(), route_status=self.route_status,
                            rooms={key: {**room, "pending_send": key in self.room_sends} for key, room in self.rooms.items()},
                            scopes={"default": self.default_scope, "supported": self.scope_supported,
                                    "channels": self.channel_scopes}))
@@ -465,7 +480,15 @@ class Bridge:
                 task.cancel()
             self.status = "reconnecting" if self.desired else "offline"
             self.changed()
-        elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "PATH_UPDATE", "TRACE_DATA", "DISCOVER_RESPONSE"):
+        elif name == "PATH_UPDATE":
+            # Event callbacks must never acquire the command lock or write routes.
+            self.path_revision += 1
+            for status in self.route_status.values():
+                if status.get("state") == "confirmed":
+                    status["state"] = "stale"
+            self.log(name, p)
+            self.changed()
+        elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "TRACE_DATA", "DISCOVER_RESPONSE"):
             if name == "RX_LOG_DATA" and (echo := repeater_echo(p)):
                 self.recent_echoes.append(echo)
                 if self.store.record_repeater(*echo):
@@ -620,11 +643,111 @@ class Bridge:
             self.changed()
             return self.snapshot()
 
-    async def command(self, method, *args):
-        result = await asyncio.wait_for(getattr(self.radio.commands, method)(*args), 10)
+    async def raw_command(self, method, *args, route_guard=None):
+        async def invoke():
+            if route_guard is not None:
+                self.require_ready()
+                if route_guard != self.path_revision:
+                    raise RuntimeError("Pfad vor Versand geändert; kein Versand.")
+            return await getattr(self.radio.commands, method)(*args)
+        result = await asyncio.wait_for(invoke(), 10)
         if result is None or result.type == EventType.ERROR:
             raise RuntimeError(f"{method}: {public(result.payload) if result else 'Keine Antwort vom Companion'}")
         return result
+
+    async def activate_route(self, target, route):
+        # Called only within self.lock: no API command/retry can interleave.
+        self.route_status[target] = {"state": "activating"}
+        self.changed()
+        try:
+            if route["hash_size"] > 1:
+                device = await self.raw_command("send_device_query")
+                if device.payload.get("path_hash_mode") not in (0, 1, 2):
+                    raise RuntimeError("Firmware bestätigt keine Mehrbyte-Pfade")
+            # Refresh metadata: change_contact_path rewrites the whole contact.
+            result = await self.raw_command("get_contacts")
+            if result.type != EventType.CONTACTS:
+                raise RuntimeError("Kontaktliste nicht bestätigt")
+            contacts = public(result.payload)
+            if len([key for key in contacts if key.startswith(target[:12])]) != 1:
+                raise RuntimeError("Zielpräfix ist nicht eindeutig")
+            contact = contacts.get(target)
+            if not contact or contact.get("type") not in (1, 2, 3):
+                raise RuntimeError("Zielkontakt fehlt im Companion")
+            revision = self.path_revision
+            result = await self.raw_command("change_contact_path", dict(contact), "".join(route["path"]), route["hash_size"] - 1)
+            if result.type != EventType.OK:
+                raise RuntimeError("Pfadänderung nicht bestätigt")
+            result = await self.raw_command("get_contact_by_key", bytes.fromhex(target))
+            actual = public(result.payload)
+            if (result.type != EventType.NEXT_CONTACT or actual.get("public_key") != target
+                    or actual.get("out_path") != "".join(route["path"])
+                    or actual.get("out_path_len") != len(route["path"])
+                    or actual.get("out_path_hash_mode") != route["hash_size"] - 1
+                    or revision != self.path_revision):
+                raise RuntimeError("DIRECT-Pfad nicht unverändert zurückgelesen")
+            self.contacts[target] = actual
+            self.route_status[target] = {"state": "confirmed", "path": route["path"],
+                                         "hash_size": route["hash_size"], "time": time.time()}
+        except (RuntimeError, TimeoutError, ConnectionError, AttributeError, KeyError) as exc:
+            self.route_status[target] = {"state": "failed", "error": "Routenaktivierung fehlgeschlagen; kein Versand."}
+            self.log("ROUTE_ACTIVATION_FAILED", {"target": target})
+            raise RuntimeError("Manuelle DIRECT-Route konnte nicht bestätigt werden; kein Versand.") from exc
+        finally:
+            self.changed()
+
+    async def command(self, method, *args):
+        target, route = None, None
+        if method in ("send_msg", "send_cmd", "send_login"):
+            target = args[0].get("public_key") if isinstance(args[0], dict) else args[0]
+            route = self.store.routes().get(target)
+            if route:
+                await self.activate_route(target, route)
+        result = await self.raw_command(method, *args, route_guard=self.path_revision if route else None)
+        if route:
+            self.confirm_direct(target, result)
+        return result
+
+    def confirm_direct(self, target, result):
+        # MSG_SENT confirms DIRECT/FLOOD, never the exact transmitted hops.
+        status = self.route_status[target]
+        confirmed = result.type == EventType.MSG_SENT and result.payload.get("type") == 0
+        status["tx"] = "direct" if confirmed else "unconfirmed"
+        if not confirmed:
+            status.update(state="failed", error="Companion bestätigt keinen DIRECT-Versand; keine weiteren Versuche.")
+        self.changed()
+        if not confirmed:
+            raise RuntimeError(status["error"])
+
+    async def save_route(self, setting):
+        target = setting.target.lower()
+        async with self.lock:
+            contact = self.contacts.get(target)
+            if not contact or contact.get("unknown") or contact.get("type") not in (1, 2, 3):
+                raise HTTPException(404, "Kein gespeicherter Chat-, Repeater- oder Roomserver-Kontakt.")
+            if target in self.dm_targets.values():
+                raise HTTPException(409, "Bitte laufende Sendeversuche abwarten.")
+            route = None
+            if setting.mode == "MANUAL":
+                path = []
+                for value in setting.path:
+                    value = value.strip().lower()
+                    if len(value) == 64:
+                        if self.contacts.get(value, {}).get("type") != 2:
+                            raise HTTPException(422, "Hop ist kein bekannter Repeater.")
+                        value = value[:setting.hash_size * 2]
+                    if len(value) != setting.hash_size * 2 or any(c not in "0123456789abcdef" for c in value):
+                        raise HTTPException(422, "Ungültiges Repeater-Hash-Präfix.")
+                    path.append(value)
+                if not 1 <= len(path) <= min(63, 64 // setting.hash_size):
+                    raise HTTPException(422, "DIRECT-Pfad: 1–63 Hops, höchstens 64 Pfad-Bytes.")
+                warnings = [f"Mehrdeutiger Repeater-Hash: {hop}" for hop in dict.fromkeys(path)
+                            if sum(key.startswith(hop) for key, c in self.contacts.items() if c.get("type") == 2) > 1]
+                route = {"hash_size": setting.hash_size, "path": path, "warnings": warnings}
+            self.store.set_route(target, route)
+            self.route_status.pop(target, None)
+            self.changed()
+            return self.snapshot()
 
     async def read_contacts(self):
         result = await self.command("get_contacts")
@@ -980,6 +1103,7 @@ class Bridge:
         for task in self.repeater_login_tasks.values():
             task.cancel()
         self.repeater_login_tasks.clear()
+        self.route_status.clear()
         for session in self.repeaters.values():
             session["status"] = "disconnected"
         if self.room_login_task:
@@ -1054,6 +1178,7 @@ class Bridge:
         if mid in self.pending_dms:
             self.store.finish_send(mid, "interrupted")
             self.pending_dms.pop(mid, None)
+            self.dm_targets.pop(mid, None)
             self.dm_wakeups.pop(mid, None)
             self.emit("message", {"id": mid})
         for target, pending in list(self.room_sends.items()):
@@ -1061,10 +1186,15 @@ class Bridge:
                 del self.room_sends[target]
                 self.changed()
 
-    def dm_attempt(self, mid, result, route, attempt):
+    def dm_attempt(self, mid, result, route, attempt, target=None):
         payload = public(result.payload)
         code = payload.get("expected_ack")
         self.store.record_attempt(mid, code, route, attempt)
+        configured = self.store.routes().get(target)
+        with self.store.db:
+            self.store.db.execute("UPDATE messages SET tx_mode=?, tx_path=? WHERE id=?",
+                                  ("MANUAL" if configured else "AUTO",
+                                   json.dumps(configured["path"]) if configured else None, mid))
         if code and code in self.acks:
             self.store.acknowledge(code)
         self.emit("message", {"id": mid})
@@ -1080,12 +1210,13 @@ class Bridge:
         route = "flood" if result.payload.get("type") == 1 else "direct"
         direct_count, flood_count = (0, 1) if route == "flood" else (1, 0)
         attempt = 0
+        manual = target in self.store.routes()
         try:
             while True:
                 await self.wait_dm_ack(mid, result)
                 if self.store.delivered(mid):
                     return
-                if flood_count >= 3:
+                if flood_count >= 3 or (manual and direct_count >= 3):
                     self.store.finish_send(mid, "unconfirmed")
                     return
                 async with self.lock:
@@ -1097,7 +1228,7 @@ class Bridge:
                     contact = self.contacts[target]
                     if contact.get("type") == 3 and not self.rooms.get(target, {}).get("can_post"):
                         raise RuntimeError("Roomserver-Anmeldung nicht mehr aktiv")
-                    if direct_count >= 3 or flood_count:
+                    if not manual and (direct_count >= 3 or flood_count):
                         # Reset on each flood attempt: a PATH_UPDATE may have
                         # supplied a new direct route while waiting for an ACK.
                         await self.command("reset_path", target)
@@ -1107,13 +1238,21 @@ class Bridge:
                     if self.store.delivered(mid):
                         return
                     attempt += 1
-                    result = await self.command("send_msg", contact, text, timestamp, attempt)
+                    if manual:
+                        await self.activate_route(target, self.store.routes()[target])
+                        if self.store.delivered(mid):
+                            return
+                        # command() would activate again, opening another ACK window.
+                        result = await self.raw_command("send_msg", contact, text, timestamp, attempt, route_guard=self.path_revision)
+                        self.confirm_direct(target, result)
+                    else:
+                        result = await self.command("send_msg", contact, text, timestamp, attempt)
                     route = "flood" if result.payload.get("type") == 1 else "direct"
                     if route == "flood":
                         flood_count += 1
                     else:
                         direct_count += 1
-                    self.dm_attempt(mid, result, route, flood_count if route == "flood" else direct_count)
+                    self.dm_attempt(mid, result, route, flood_count if route == "flood" else direct_count, target)
                     self.log("MESSAGE_RETRY", {"id": mid, "route": route, "attempt": attempt + 1})
                     # A device that ignores reset_path must not cause an endless loop.
                     if direct_count > 3:
@@ -1127,6 +1266,7 @@ class Bridge:
         finally:
             self.emit("message", {"id": mid})
             self.pending_dms.pop(mid, None)
+            self.dm_targets.pop(mid, None)
             self.dm_wakeups.pop(mid, None)
 
     async def send(self, kind, target, text):
@@ -1195,11 +1335,12 @@ class Bridge:
             mid = self.store.save(kind, target, "out", text, timestamp, status, ack, echo_key=echo_key)
             if kind in ("dm", "room"):
                 route = "flood" if result.payload.get("type") == 1 else "direct"
-                self.dm_attempt(mid, result, route, 1)
+                self.dm_attempt(mid, result, route, 1, dm_target)
                 status = "delivered" if self.store.delivered(mid) else "sending"
                 if status != "delivered":
                     if kind == "room":
                         self.room_sends[dm_target] = mid
+                    self.dm_targets[mid] = dm_target
                     self.dm_wakeups[mid] = asyncio.Event()
                     self.pending_dms[mid] = asyncio.create_task(
                         self.retry_dm(mid, dm_target, text, timestamp, result, self.radio))
@@ -1229,6 +1370,12 @@ class MessageInput(BaseModel):
 
 class RoomTarget(BaseModel):
     target: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class RouteInput(RoomTarget):
+    mode: Literal["AUTO", "MANUAL"] = "AUTO"
+    hash_size: Literal[1, 2, 3] = 1
+    path: list[str] = Field(default_factory=list, max_length=63)
 
 
 class ContactInput(RoomTarget):
@@ -1376,6 +1523,10 @@ def create_app(db_path=None, autoconnect=None):
     @app.post("/api/contacts/remove")
     async def remove_contact(request: Request, setting: RoomTarget):
         return await contact_change(request, setting, True)
+
+    @app.post("/api/routes")
+    async def routes(request: Request, setting: RouteInput):
+        return await request.app.state.bridge.save_route(setting)
 
     @app.get("/api/messages")
     async def messages(request: Request, kind: Literal["channel", "dm", "room"], target: str, before: int | None = None):

@@ -77,7 +77,7 @@ with sync_playwright() as p:
     state['contacts'] = {KEY: {'adv_name': '<Alice>', 'type': 1}}
     refresh()
     page.locator('#device-nav').click()
-    page.locator('#managed-contacts button').click()
+    page.locator('#managed-contacts button[aria-label$="vom Companion löschen"]').click()
     expect(page.locator('#contact-feedback')).to_contain_text('gelöscht und bestätigt')
     expect(page.locator('#managed-contact-count')).to_have_text('0')
     assert requests[-1] == ('api/contacts/remove', {'target': KEY})
@@ -90,7 +90,7 @@ with sync_playwright() as p:
         expect(page.locator('#managed-contact-count')).to_have_text('1')
         page.set_viewport_size({'width': 390, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        page.locator('#managed-contacts button').click()
+        page.locator('#managed-contacts button[aria-label$="vom Companion löschen"]').click()
         expect(page.locator('#managed-contact-count')).to_have_text('0')
     state['status'] = 'offline'
     refresh()

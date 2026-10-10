@@ -436,3 +436,9 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
 #trace-results details {margin-top:16px;}
 #trace-results table {width:100%;}
 #trace-results td {overflow-wrap:anywhere;}
+
+#route-dialog {width:min(720px, 92vw);max-height:90vh;overflow:auto;}
+#route-hops li {display:flex;gap:.5rem;margin:.5rem 0;}
+#route-hops input {flex:1;min-width:0;}
+#route-current, #chat-routing-text, #repeater-routing-text {overflow-wrap:anywhere;}
+#chat-routing {padding:.4rem 1rem;font-size:.85rem;}
