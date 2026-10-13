@@ -10,13 +10,20 @@ möglich. Wiederholungen und Nullbytes sind zulässig, die Pfeile ändern die
 Reihenfolge. Kollisionen unter bekannten Repeater-Schlüsseln ergeben eine Warnung;
 unbekannte Repeater im Netz können weitere Kollisionen verursachen.
 
-AUTO speichern löscht die manuelle Konfiguration. Der zuletzt im Companion
-vorhandene Pfad bleibt zunächst erhalten und unterliegt wieder dem bisherigen
-AUTO-Verhalten. Speichern selbst verursacht weder Funkverkehr noch eine
-Aktivierung. Während laufender Nachrichtenversuche ist die Konfiguration des
-betroffenen Ziels gesperrt. Die Konfiguration bleibt auch nach Neustart oder
-Kontaktentfernung erhalten; sie wird nur für einen wieder gespeicherten Kontakt
-mit exakt demselben vollständigen Schlüssel verwendet.
+Beim Wechsel von MANUAL auf AUTO wird der gespeicherte Companion-Pfad mit
+`CMD_RESET_PATH (0x0D)` zurückgesetzt und zurückgelesen. Erst danach wird die
+manuelle Konfiguration gelöscht. Ohne Verbindung oder bestätigtes Rücklesen
+bleibt MANUAL konfiguriert. Erneutes Speichern von AUTO löscht keine gelernten
+Pfade. Diese lokalen Companion-Kommandos erzeugen keinen Funkverkehr.
+Während laufender Nachrichten- oder Loginversuche ist die Route des Ziels gesperrt.
+MANUAL kann weiterhin offline gespeichert werden und wird erst beim Versand
+aktiviert. Die Konfiguration bleibt nach Neustart und Kontaktentfernung erhalten.
+
+AUTO ist eine Routingstrategie, kein erzwungener FLOOD-Modus: mit bekanntem
+Companion-Pfad sendet die Firmware DIRECT (auch null Hops), andernfalls FLOOD.
+MANUAL erzwingt vor jedem Versand die konfigurierte DIRECT-Route. Die Diagnose
+trennt Konfiguration und zuletzt zurückgelesenen Companion-Pfad; nach PATH_UPDATE
+wird der Pfad als nicht aktuell gekennzeichnet.
 
 DIRECT erlaubt hier 1–63 Hops und insgesamt höchstens 64 Pfadbytes:
 
@@ -32,7 +39,7 @@ nicht Kodierung, Grenzwerte oder eine TRACE-Messung. Es wird kein TRACE ausgelö
 
 ## Versand und Bestätigung
 
-AUTO bleibt unverändert: bei vorhandener DIRECT-Route höchstens drei
+Für Chatnachrichten gilt weiterhin: bei vorhandener DIRECT-Route höchstens drei
 DIRECT-Versuche, danach höchstens drei FLOOD-Versuche; bei zunächst unbekanntem
 Pfad direkt höchstens drei FLOOD-Versuche. Vor jedem FLOOD-Retry wird der Pfad
 wie bisher zurückgesetzt.
@@ -155,3 +162,5 @@ der manuellen Konfiguration. Dies simuliert Companion-Frames, keine
 Funkentschlüsselung. Kann die Firmware ein sehr spätes ACK nicht mehr ihrer
 begrenzten ACK-Tabelle zuordnen, erhält der Host auch keine entsprechende
 Bestätigung; bloßer Empfang eines PATH-Pakets ersetzt diese nicht.
+
+Die gemeinsame Loginstrategie ist in [authentication.md](authentication.md) beschrieben.

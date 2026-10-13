@@ -33,6 +33,9 @@ def bridge():
         send_chan_msg=AsyncMock(return_value=Event(EventType.OK, {})),
         send_msg=AsyncMock(return_value=Event(EventType.MSG_SENT, {'expected_ack': bytes.fromhex('1234abcd')})),
     ))
+    async def read_contact(key):
+        return Event(EventType.NEXT_CONTACT, {**bridge.contacts[key.hex()], 'out_path_len': -1, 'out_path': ''})
+    bridge.radio.commands.get_contact_by_key = AsyncMock(side_effect=read_contact)
     yield bridge
     store.db.close()
 
@@ -40,7 +43,7 @@ def bridge():
 @pytest.fixture
 def room_bridge(bridge):
     bridge.contacts[ROOM] = {'public_key': ROOM, 'adv_name': 'Testroom', 'type': 3}
-    bridge.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000}))
+    bridge.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000, 'type': 1}))
     bridge.radio.commands.send_logout = AsyncMock(return_value=Event(EventType.OK, {}))
     bridge.radio.commands.get_time = AsyncMock(return_value=Event(EventType.CURRENT_TIME, {'time': 1000}))
     return bridge
@@ -59,7 +62,7 @@ def test_room_login_requires_matching_confirmation(room_bridge):
         await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': ROOM[:12], 'permissions': 0, 'acl_permissions': 2}))
         assert b.rooms[ROOM]['can_post']
         assert b.rooms[ROOM]['status'] == 'logged_in'
-        assert b.room_login_task is None
+        assert b.auth is None or b.auth['done'].is_set()
         assert not b.store.get_meta('rooms', {})
     asyncio.run(scenario())
 
@@ -72,12 +75,12 @@ def test_room_permissions_and_early_login(room_bridge, permissions, acl, can_pos
         if acl is not None:
             payload['acl_permissions'] = acl
         await b.on_event(Event(EventType.LOGIN_SUCCESS, payload))
-        return Event(EventType.MSG_SENT, {})
+        return Event(EventType.MSG_SENT, {'type': 1})
     b.radio.commands.send_login.side_effect = send_login
     async def scenario():
         await b.login_room(ROOM, '')
         assert b.rooms[ROOM]['can_post'] is can_post
-        assert b.room_login_task is None
+        assert b.auth is None or b.auth['done'].is_set()
     asyncio.run(scenario())
 
 
@@ -85,8 +88,8 @@ def test_room_timeout_and_late_login_do_not_enable_posting(room_bridge):
     b = room_bridge
     async def scenario():
         await b.login_room(ROOM, 'hello')
-        b.room_login_task.cancel()
-        await b.room_login_expiry(ROOM, 0)
+        b.wait_login = AsyncMock()
+        await b.auth['task']
         assert b.rooms[ROOM]['status'] == 'failed'
         await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': ROOM[:12], 'permissions': 0}))
         assert not b.rooms[ROOM]['can_post']
@@ -115,12 +118,12 @@ def test_room_rejected_login_and_disconnect(room_bridge):
         await b.login_room(ROOM, 'hello')
         await b.on_event(Event(EventType.LOGIN_FAILED, {'pubkey_prefix': ROOM[:12]}))
         assert b.rooms[ROOM]['status'] == 'failed'
-        assert b.room_login_task is None
+        assert b.auth is None or b.auth['done'].is_set()
         await b.login_room(ROOM, 'hello')
         await b.on_event(Event(EventType.DISCONNECTED, {}))
         assert b.rooms[ROOM]['status'] == 'disconnected'
         assert not b.rooms[ROOM]['can_post']
-        assert b.room_login_task is None
+        assert b.auth is None or b.auth['done'].is_set()
     asyncio.run(scenario())
 
 
@@ -1049,7 +1052,7 @@ def test_remove_contact_rejects_active_operations(bridge, busy):
     if busy == 'message':
         b.store.save('dm', KEY[:12], 'out', 'Sending', 123, 'sending')
     else:
-        b.rooms[KEY] = {'status': 'logging_in'}
+        b.auth = {'target': KEY}
     b.radio.commands.get_contacts = AsyncMock(return_value=Event(EventType.CONTACTS, b.contacts.copy()))
     b.radio.commands.remove_contact = AsyncMock()
     with pytest.raises(HTTPException) as exc:
@@ -1089,7 +1092,7 @@ def test_contact_api_validation_and_offline_guard(tmp_path):
 def test_repeater_cli_login_reply_and_disconnect(bridge, device_type):
     b = bridge
     b.contacts[KEY]['type'] = device_type
-    b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000}))
+    b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'suggested_timeout': 10000, 'type': 1}))
     b.radio.commands.send_cmd = AsyncMock(return_value=Event(EventType.MSG_SENT, {}))
     b.radio.commands.send_logout = AsyncMock(return_value=Event(EventType.OK, {}))
 
@@ -1103,7 +1106,7 @@ def test_repeater_cli_login_reply_and_disconnect(bridge, device_type):
         assert b.repeaters[KEY]['status'] == 'logging_in'
         await b.on_event(Event(EventType.LOGIN_SUCCESS, {'pubkey_prefix': KEY[:12]}))
         assert b.repeaters[KEY]['status'] == 'logged_in'
-        assert not b.repeater_login_tasks
+        assert b.auth is None or b.auth['done'].is_set()
         await b.repeater_action(KEY, 'command', 'get name')
         b.radio.commands.send_cmd.assert_awaited_once_with(b.contacts[KEY], 'get name')
         await b.on_event(Event(EventType.CONTACT_MSG_RECV, {'pubkey_prefix': KEY[:12], 'txt_type': 1, 'text': '<Repeater>'}))
@@ -1133,9 +1136,6 @@ def test_repeater_cli_validation_and_failure(bridge):
             await b.repeater_action(KEY, 'login', 'secret')
         assert 'secret' not in str(exc.value)
         assert b.repeaters[KEY]['status'] == 'failed'
-        b.repeaters[KEY]['status'] = 'logging_in'
-        await b.repeater_login_expiry(KEY, 0)
-        assert b.repeaters[KEY]['status'] == 'timeout'
         b.ready = False
         with pytest.raises(HTTPException) as exc:
             await b.repeater_action(KEY, 'login', '')
@@ -1164,7 +1164,7 @@ def test_conversation_summaries_track_incoming_and_outgoing(bridge):
 def test_room_and_cli_logins_do_not_share_credentials(bridge):
     b = bridge
     b.contacts[KEY]['type'] = 3
-    b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {}))
+    b.radio.commands.send_login = AsyncMock(return_value=Event(EventType.MSG_SENT, {'type': 1}))
 
     async def scenario():
         b.rooms[KEY] = {"status": "logged_in", "can_post": True}

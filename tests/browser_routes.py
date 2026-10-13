@@ -23,6 +23,7 @@ with sync_playwright() as p:
             requests.append(body)
             if body['mode'] == 'AUTO':
                 state['routes'].pop(body['target'], None)
+                state['contacts'][body['target']].update(out_path_len=-1, out_path='')
             else:
                 size = body['hash_size']
                 state['routes'][body['target']] = dict(hash_size=size, path=[hop[:size*2] for hop in body['path']])
@@ -80,7 +81,7 @@ with sync_playwright() as p:
     expect(page.locator('#route-save')).to_be_disabled()
     page.locator('#route-mode').select_option('AUTO')
     page.locator('#route-save').click()
-    expect(page.locator('#route-current')).to_have_text('AUTO · Automatische Routenerkennung')
+    expect(page.locator('#route-current')).to_have_text('AUTO · FLOOD · kein gespeicherter Pfad')
     assert len(requests) == 2
     page.locator('#route-close').click()
     assert not errors, errors

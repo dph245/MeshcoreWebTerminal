@@ -32,11 +32,21 @@ function receivedScopeLabel(p, radio) {
   return 'Nicht bestimmbar';
 }
 
+function loginDescription(p) {
+  const results={sending:'Wird gesendet',sent:'Gesendet',attempt_timeout:'Antwort-Timeout',flood_fallback:'Einmaliger Flood-Fallback',success:'Erfolgreich',rejected:'Abgelehnt',timeout:'Ohne Antwort beendet',error:'Companion-Fehler',cancelled:'Abgebrochen'};
+  const name=state.contacts[p.target]?.adv_name||p.target?.slice(0,12)||'Gerät';
+  return `${name} · Versuch ${p.attempt}/3 · ${p.mode} / ${(p.route||'unknown').toUpperCase()} · ${results[p.result]||p.result}`;
+}
+
 function describePacket(event) {
   const p=event.payload||{}, fields=[];
   const add=(label,value)=>{if(value!==undefined&&value!==null&&value!=='')fields.push([label,String(value)]);};
   const radio=event.type==='RX_LOG_DATA';
   const type=radio ? packetTypes[p.payload_type]||'Unbekanntes Funkpaket' : eventNames[event.type]||event.type;
+  if(event.type==='AUTH_LOGIN'){
+    add('Ziel',p.target);add('Versuch',`${p.attempt}/3`);add('Routing',`${p.mode} / ${p.route}`);add('Wartezeit',p.timeout==null?null:`${p.timeout} s`);
+    return {type,summary:loginDescription(p),fields,message:null};
+  }
   const message=typeof p.message==='string'?p.message:typeof p.text==='string'?p.text:null;
   add('Empfangen',new Date(event.time*1000).toLocaleString('de-DE'));
   add('Pakettyp',type);
@@ -100,6 +110,7 @@ function showPacket(event) {
 // Compact live rows following MeshCoreOnAir's type/content/signal layout.
 // The TCP SDK does not provide OnAir's observer hash or multi-observer groups.
 function packetPreview(event) {
+  if(event.type==='AUTH_LOGIN')return loginDescription(event.payload||{});
   const p=event.payload||{};
   const key=p.adv_key||p.public_key||p.pubkey_prefix;
   const sender=p.adv_name||(typeof key==='string'?hopName(key):'');

@@ -14,7 +14,7 @@ const traceStatuses={sending:'Wird gesendet',waiting:'Warte auf Antwort',complet
 const drafts = new Map();
 const encoder = new TextEncoder();
 const statusNames = {offline:'Offline', connecting:'Verbinde …', connected:'Verbunden', reconnecting:'Neuverbindung …'};
-const eventNames = {DISCOVER_RESPONSE:'DISCOVER-Antwort', DISCOVER_SENT:'DISCOVER gesendet', RX_LOG_DATA:'Funkpaket', RAW_DATA:'Rohdaten', ADVERTISEMENT:'Advertisement', NEW_CONTACT:'Neuer Kontakt', PATH_UPDATE:'Route aktualisiert', ACK:'Bestätigung', MESSAGE_SENT:'Nachricht gesendet', CHANNEL_MSG_RECV:'Channel-Nachricht', CONTACT_MSG_RECV:'Direktnachricht', CONNECTED:'Verbunden', CONNECTION_ERROR:'Verbindungsfehler', TRACE_DATA:'Route / Trace'};
+const eventNames = {AUTH_LOGIN:'Anmeldung',DISCOVER_RESPONSE:'DISCOVER-Antwort', DISCOVER_SENT:'DISCOVER gesendet', RX_LOG_DATA:'Funkpaket', RAW_DATA:'Rohdaten', ADVERTISEMENT:'Advertisement', NEW_CONTACT:'Neuer Kontakt', PATH_UPDATE:'Route aktualisiert', ACK:'Bestätigung', MESSAGE_SENT:'Nachricht gesendet', CHANNEL_MSG_RECV:'Channel-Nachricht', CONTACT_MSG_RECV:'Direktnachricht', CONNECTED:'Verbunden', CONNECTION_ERROR:'Verbindungsfehler', TRACE_DATA:'Route / Trace'};
 function node(tag, className, text) { const el = document.createElement(tag); if(className) el.className=className; if(text!==undefined) el.textContent=text; return el; }
 function error(message) { $('error').textContent=message || ''; $('error').hidden=!message; }
 async function api(path, body) {
@@ -396,7 +396,7 @@ setInterval(renderLastHops,1000);
 
 function renderEvents() {
   const filter=$('event-filter').value;
-  const events=(paused?pausedEvents:state.events).filter(e=>e.type==='RX_LOG_DATA'&&(filter==='all'||String(e.payload?.payload_type)===filter));
+  const events=(paused?pausedEvents:state.events).filter(e=>e.type==='AUTH_LOGIN'?(filter==='all'||filter==='auth'):e.type==='RX_LOG_DATA'&&(filter==='all'||String(e.payload?.payload_type)===filter));
   $('event-count').textContent=events.length;
   $('events-empty').hidden=events.length>0;
   $('events').replaceChildren(...events.slice().reverse().map(e=>{
@@ -784,7 +784,11 @@ for(const [index,tab] of meshTabs.entries()) {
 let routeTarget=null, routeDraft=[], routeBusy=false;
 function routeDiagnostic(target) {
   const route=state.routes?.[target], status=state.route_status?.[target];
-  if(!route)return 'AUTO · Automatische Routenerkennung';
+  if(!route){
+    const contact=state.contacts[target], length=contact?.out_path_len;
+    const actual=status?.state==='stale'?'Companion-Pfad muss neu gelesen werden':length===-1||length===255?'FLOOD · kein gespeicherter Pfad':Number.isInteger(length)&&length>=0?`DIRECT · ${length} Hops im Companion`:'Companion-Pfad unbekannt';
+    return `AUTO · ${actual}`;
+  }
   const detail={confirmed:'Vor Versand zurückgelesen',activating:'Routenaktivierung läuft',stale:'Pfadänderung empfangen · erneute Aktivierung beim Versand',failed:status?.error}[status?.state]||'Noch nicht aktiviert';
   return `MANUAL · Konfiguriert: ${route.path.join(' → ')} · ${detail}${status?.path?' · '+status.path.join(' → '):''}${status?.tx==='direct'?' · DIRECT-Versand bestätigt (Hopfolge nicht übermittelt)':''}${state.contacts[target]?.type===3?' · Autonome Room-Synchronisation und Antwortwege sind nicht statisch erzwingbar.':''}`;
 }
@@ -822,7 +826,7 @@ function validateRoute() {
   $('route-fields').hidden=!manual;
   const ambiguous=[...new Set(path)].filter(hop=>hop&&Object.entries(state.contacts).filter(([key,c])=>c.type===2&&key.startsWith(hop)).length>1);
   $('route-validation').textContent=manual?`${path.length} / ${max} Hops · ${size*2} Hexzeichen je Hop${ambiguous.length?' · Warnung: mehrdeutige Hashes '+ambiguous.join(', '):''}`:'';
-  $('route-preview').textContent=manual?path.join(' → '):'Manuelle Konfiguration löschen; automatische Routenerkennung verwenden.';
+  $('route-preview').textContent=manual?path.join(' → '):'Manuellen Companion-Pfad zurücksetzen; danach automatische Routenerkennung verwenden.';
   $('route-save').disabled=routeBusy||(manual&&!valid);
   $('route-add').disabled=routeBusy||routeDraft.length>=max;
 }
@@ -837,7 +841,7 @@ $('route-form').onsubmit=async event=>{
   try {
     applyState(await api('/api/routes',body));
     $('route-current').textContent=routeDiagnostic(routeTarget);
-    $('route-feedback').textContent='In SQLite gespeichert. Aktivierung und Rücklesen erfolgen vor dem nächsten Versand.';
+    $('route-feedback').textContent=body.mode==='AUTO'?'AUTO aktiv.':'In SQLite gespeichert. Aktivierung und Rücklesen erfolgen vor dem nächsten Versand.';
   } catch(exc){$('route-feedback').textContent=exc.message;}
   finally{routeBusy=false;validateRoute();}
 };

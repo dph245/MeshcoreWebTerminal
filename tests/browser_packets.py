@@ -165,6 +165,22 @@ with sync_playwright() as p:
     expect(page.locator('#last-hops tr')).to_have_count(0)
     expect(page.locator('#last-hops-empty')).to_be_visible()
     page.evaluate('Date.now=window.originalNow')
+    page.locator('#monitor-live-nav').click()
+    page.locator('#pause').click()
+    login = {'time': 1700000020, 'type': 'AUTH_LOGIN', 'payload': {
+        'target': 'ab'+'0'*62, 'attempt': 2, 'mode': 'AUTO', 'route': 'flood',
+        'result': 'success', 'timeout': 60}}
+    page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', login)
+    page.locator('#event-filter').select_option('auth')
+    expect(page.locator('#events tr')).to_have_count(1)
+    expect(page.locator('#events')).to_contain_text('Dach · Versuch 2/3 · AUTO / FLOOD · Erfolgreich')
+    page.locator('#events .packet-open').click()
+    expect(page.locator('#packet-title')).to_have_text('Anmeldung')
+    expect(page.locator('#packet-fields')).to_contain_text('60 s')
+    expect(page.locator('#packet-message')).to_be_hidden()
+    page.keyboard.press('Escape')
+    page.locator('#event-filter').select_option('5')
+    expect(page.locator('#events')).not_to_contain_text('Versuch 2/3')
     assert not errors, errors
     browser.close()
 print('Packet browser checks passed: readable metadata, encrypted/unknown/raw packets, aliases, XSS, live updates, themes and mobile dialog.')

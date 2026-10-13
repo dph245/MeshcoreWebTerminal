@@ -48,12 +48,16 @@ def routed():
         calls.append('send')
         return Event(EventType.MSG_SENT, dict(type=0, expected_ack=len(calls).to_bytes(4, 'big')))
 
+    async def reset(key):
+        device_contacts[key].update(out_path='', out_path_len=-1, out_path_hash_mode=-1)
+        return Event(EventType.OK, {})
+
     b.radio = SimpleNamespace(is_connected=True, commands=SimpleNamespace(
         get_contacts=AsyncMock(side_effect=contacts), change_contact_path=AsyncMock(side_effect=change),
         get_contact_by_key=AsyncMock(side_effect=read), send_msg=AsyncMock(side_effect=send),
         send_cmd=AsyncMock(side_effect=send), send_login=AsyncMock(side_effect=send),
         send_logout=AsyncMock(return_value=Event(EventType.OK, {})),
-        reset_path=AsyncMock(return_value=Event(EventType.OK, {})),
+        reset_path=AsyncMock(side_effect=reset),
         get_time=AsyncMock(return_value=Event(EventType.CURRENT_TIME, {'time': 1000})),
         send_device_query=AsyncMock(return_value=Event(EventType.DEVICE_INFO, {'path_hash_mode': 0}))))
     b.wait_dm_ack = AsyncMock()
@@ -277,7 +281,8 @@ def test_route_api_validates_full_key_and_persists_offline(tmp_path):
     with TestClient(create_app(database, autoconnect=False)) as client:
         assert client.get('/api/state').json()['routes'][KEY]['hash_size'] == 3
         result = client.post('/api/routes', headers=headers, json=dict(target=KEY, mode='AUTO'))
-        assert result.status_code == 200 and not result.json()['routes']
+        assert result.status_code == 409
+        assert client.get('/api/state').json()['routes'][KEY]
 
 
 def test_retry_activation_failure_preserves_message_and_stops(routed):

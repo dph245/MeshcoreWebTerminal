@@ -329,9 +329,8 @@ class Bridge:
         self.pending_dms = {}
         self.dm_wakeups = {}
         self.repeaters = {}
-        self.repeater_login_tasks = {}
         self.rooms = {}
-        self.room_login_task = None
+        self.auth = None
         self.room_sends = {}
         self.room_timestamps = {}
         self.dm_targets = {}
@@ -438,29 +437,10 @@ class Bridge:
             self.log(name, p)
         elif name in ("LOGIN_SUCCESS", "LOGIN_FAILED"):
             prefix = p.get("pubkey_prefix") or public(event.attributes).get("pubkey_prefix")
-            repeater_matches = [key for key, session in self.repeaters.items()
-                                if prefix and key.startswith(prefix) and session["status"] == "logging_in"]
-            if len(repeater_matches) == 1:
-                key = repeater_matches[0]
-                self.repeaters[key]["status"] = "logged_in" if name == "LOGIN_SUCCESS" else "failed"
-                task = self.repeater_login_tasks.pop(key, None)
-                if task:
-                    task.cancel()
-                self.changed()
-            matches = [key for key, room in self.rooms.items()
-                       if prefix and key.startswith(prefix) and room["status"] == "logging_in"]
-            if len(matches) == 1:
-                room = self.rooms[matches[0]]
-                if name == "LOGIN_SUCCESS":
-                    acl = p.get("acl_permissions")
-                    can_post = (acl & 3) >= 2 if isinstance(acl, int) else p.get("permissions") in (0, 1)
-                    room.update(status="logged_in", can_post=can_post, error=None)
-                else:
-                    room.update(status="failed", can_post=False, error="Anmeldung vom Roomserver abgelehnt.")
-                if self.room_login_task:
-                    self.room_login_task.cancel()
-                    self.room_login_task = None
-                self.changed()
+            auth = self.auth
+            matches = [key for key in self.contacts if prefix and key.startswith(prefix)]
+            if auth and not auth["done"].is_set() and matches == [auth["target"]]:
+                self.finish_login(auth, "success" if name == "LOGIN_SUCCESS" else "rejected", p)
             self.log(name, p)
         elif name == "ACK":
             code = p.get("code") or public(event.attributes).get("code")
@@ -486,6 +466,9 @@ class Bridge:
             for status in self.route_status.values():
                 if status.get("state") == "confirmed":
                     status["state"] = "stale"
+            for key in self.contacts:
+                if key not in self.store.routes():
+                    self.route_status[key] = {"state": "stale"}
             self.log(name, p)
             self.changed()
         elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "TRACE_DATA", "DISCOVER_RESPONSE"):
@@ -643,14 +626,18 @@ class Bridge:
             self.changed()
             return self.snapshot()
 
-    async def raw_command(self, method, *args, route_guard=None):
+    async def raw_command(self, method, *args, route_guard=None, stop_event=None):
         async def invoke():
+            if stop_event is not None and stop_event.is_set():
+                return None
             if route_guard is not None:
                 self.require_ready()
                 if route_guard != self.path_revision:
                     raise RuntimeError("Pfad vor Versand geändert; kein Versand.")
             return await getattr(self.radio.commands, method)(*args)
         result = await asyncio.wait_for(invoke(), 10)
+        if result is None and stop_event is not None and stop_event.is_set():
+            return None
         if result is None or result.type == EventType.ERROR:
             raise RuntimeError(f"{method}: {public(result.payload) if result else 'Keine Antwort vom Companion'}")
         return result
@@ -719,13 +706,38 @@ class Bridge:
         if not confirmed:
             raise RuntimeError(status["error"])
 
+    async def read_contact_route(self, target):
+        result = await self.raw_command("get_contact_by_key", bytes.fromhex(target))
+        actual = public(result.payload)
+        if result.type != EventType.NEXT_CONTACT or actual.get("public_key") != target:
+            raise RuntimeError("Kontaktpfad vom Companion nicht bestätigt.")
+        self.contacts[target] = actual
+        if target not in self.store.routes():
+            self.route_status.pop(target, None)
+        self.store.set_meta("contacts", self.contacts)
+        self.changed()
+        return actual
+
+    async def reset_contact_route(self, target):
+        try:
+            result = await self.raw_command("reset_path", target)
+            if result.type != EventType.OK:
+                raise RuntimeError("Pfad-Reset nicht bestätigt.")
+            actual = await self.read_contact_route(target)
+            if actual.get("out_path_len") not in (-1, 255):
+                raise RuntimeError("Companion hat keinen unbekannten Pfad bestätigt.")
+        except (RuntimeError, TimeoutError, ConnectionError, AttributeError):
+            self.route_status[target] = {"state": "failed", "error": "Pfad-Reset nicht bestätigt."}
+            self.changed()
+            raise RuntimeError("Pfad-Reset nicht bestätigt.") from None
+
     async def save_route(self, setting):
         target = setting.target.lower()
         async with self.lock:
             contact = self.contacts.get(target)
             if not contact or contact.get("unknown") or contact.get("type") not in (1, 2, 3):
                 raise HTTPException(404, "Kein gespeicherter Chat-, Repeater- oder Roomserver-Kontakt.")
-            if target in self.dm_targets.values():
+            if target in self.dm_targets.values() or (self.auth and self.auth["target"] == target):
                 raise HTTPException(409, "Bitte laufende Sendeversuche abwarten.")
             route = None
             if setting.mode == "MANUAL":
@@ -744,6 +756,11 @@ class Bridge:
                 warnings = [f"Mehrdeutiger Repeater-Hash: {hop}" for hop in dict.fromkeys(path)
                             if sum(key.startswith(hop) for key, c in self.contacts.items() if c.get("type") == 2) > 1]
                 route = {"hash_size": setting.hash_size, "path": path, "warnings": warnings}
+            if setting.mode == "AUTO" and target in self.store.routes():
+                # A transition must clear the Companion's manual path before
+                # advertising AUTO. Re-saving AUTO preserves learned paths.
+                self.require_ready()
+                await self.reset_contact_route(target)
             self.store.set_route(target, route)
             self.route_status.pop(target, None)
             self.changed()
@@ -752,6 +769,9 @@ class Bridge:
     async def read_contacts(self):
         result = await self.command("get_contacts")
         self.contacts = public(result.payload)
+        for key in self.contacts:
+            if key not in self.store.routes():
+                self.route_status.pop(key, None)
         self.store.set_meta("contacts", self.contacts)
         self.changed()
 
@@ -769,7 +789,7 @@ class Bridge:
                 pending = self.store.db.execute(
                     "SELECT 1 FROM messages WHERE target=? AND direction='out' AND status='sending' LIMIT 1",
                     (key[:12],)).fetchone()
-                if pending or self.rooms.get(key, {}).get("status") == "logging_in":
+                if pending or (self.auth and self.auth["target"] == key):
                     raise HTTPException(409, "Bitte den laufenden Versand oder die Roomserver-Anmeldung abwarten.")
                 if key in self.contacts:
                     await self.command("remove_contact", key)
@@ -1045,14 +1065,157 @@ class Bridge:
             raise HTTPException(404, "Kein gespeicherter Repeater- oder Roomserver-Kontakt.")
         return contact
 
-    async def repeater_login_expiry(self, target, timeout):
+    def require_login_idle(self):
+        # Firmware has one pending_login slot, shared across all destinations.
+        if self.auth and not self.auth["done"].is_set():
+            raise HTTPException(409, "Eine Geräteanmeldung läuft bereits.")
+
+    @staticmethod
+    def login_timeout(result):
+        hint = (result.payload or {}).get("suggested_timeout")
+        if not isinstance(hint, (int, float)) or not math.isfinite(hint) or hint <= 0:
+            return 60.0
+        return min(300.0, max(30.0, hint / 1000 * 1.5))
+
+    def login_log(self, auth, outcome, **extra):
+        self.log("AUTH_LOGIN", {"target": auth["target"], "attempt": auth["attempt"],
+                                "mode": auth["mode"], "route": auth.get("route", "unknown"),
+                                "result": outcome, **extra})
+
+    def finish_login(self, auth, outcome, payload=None):
+        if auth["done"].is_set():
+            return
+        payload = payload or {}
+        session = auth["session"]
+        status = {"success": "logged_in", "rejected": "failed", "timeout": "timeout",
+                  "error": "failed", "cancelled": "disconnected"}[outcome]
+        session["status"] = status
+        if auth["room"]:
+            acl = payload.get("acl_permissions")
+            can_post = (acl & 3) >= 2 if isinstance(acl, int) else payload.get("permissions") in (0, 1)
+            session.update(status="failed" if status == "timeout" else status,
+                           can_post=outcome == "success" and can_post,
+                           error={"rejected": "Anmeldung vom Roomserver abgelehnt.",
+                                  "timeout": "Keine Anmeldebestätigung. Passwort und Erreichbarkeit prüfen.",
+                                  "error": "Anmeldung konnte nicht bestätigt werden."}.get(outcome))
+        auth["outcome"] = outcome
+        auth["done"].set()
+        self.login_log(auth, outcome)
+        self.changed()
+
+    async def send_login_attempt(self, auth, password):
+        target = auth["target"]
+        if auth["mode"] == "MANUAL":
+            await self.activate_route(target, self.store.routes()[target])
+        else:
+            contact = await self.read_contact_route(target)
+            auth["path_revision"] = self.path_revision
+            auth["path"] = (contact.get("out_path_len"), contact.get("out_path"), contact.get("out_path_hash_mode"))
+            if auth["flood_sent"] and contact.get("out_path_len") in (-1, 255):
+                self.finish_login(auth, "timeout")
+                return None
+        # A reply can arrive during any of the local route commands.
+        if auth["done"].is_set():
+            return None
+        auth["attempt"] += 1
+        auth["route"] = "unknown"
+        self.login_log(auth, "sending")
+        result = await self.raw_command("send_login", target, password,
+                                        route_guard=self.path_revision, stop_event=auth["done"])
+        if result is None and auth["done"].is_set():
+            return None
+        if result.type != EventType.MSG_SENT:
+            raise RuntimeError("Loginversand nicht bestätigt.")
+        auth["route"] = {0: "direct", 1: "flood"}.get(result.payload.get("type"), "unknown")
+        auth["flood_sent"] |= auth["route"] == "flood"
+        self.login_log(auth, "sent", timeout=self.login_timeout(result))
+        if auth["done"].is_set():
+            # Early push replies precede MSG_SENT; report the actual mode too.
+            self.login_log(auth, auth["outcome"])
+        elif auth["route"] == "unknown":
+            raise RuntimeError("Companion meldet keinen Routingmodus.")
+        if auth["mode"] == "MANUAL":
+            self.confirm_direct(target, result)
+        return result
+
+    async def start_login(self, target, password, session, room=False):
+        self.require_login_idle()
+        if target in self.dm_targets.values():
+            raise HTTPException(409, "Bitte laufende Sendeversuche abwarten.")
+        if sum(key.startswith(target[:12]) for key in self.contacts) != 1:
+            raise HTTPException(409, "Zielpräfix ist nicht eindeutig.")
+        auth = {"target": target, "session": session, "room": room, "done": asyncio.Event(),
+                "attempt": 0, "mode": "MANUAL" if target in self.store.routes() else "AUTO",
+                "flood_sent": False, "fallback": False, "radio": self.radio, "task": None}
+        self.auth = auth
+        session["status"] = "logging_in"
+        self.changed()
         try:
-            await asyncio.sleep(timeout)
-            self.repeaters[target]["status"] = "timeout"
-            self.repeater_login_tasks.pop(target, None)
-            self.changed()
+            result = await self.send_login_attempt(auth, password)
         except asyncio.CancelledError:
-            pass
+            self.finish_login(auth, "cancelled")
+            self.auth = None
+            raise
+        except (RuntimeError, TimeoutError, ConnectionError, AttributeError):
+            if auth["done"].is_set():
+                self.auth = None
+                return
+            self.finish_login(auth, "error")
+            self.auth = None
+            raise RuntimeError("Anmeldung konnte nicht bestätigt werden.") from None
+        if auth["done"].is_set():
+            self.auth = None
+        else:
+            auth["task"] = asyncio.create_task(self.retry_login(auth, password, result))
+
+    async def wait_login(self, auth, timeout):
+        with suppress(TimeoutError):
+            await asyncio.wait_for(auth["done"].wait(), timeout)
+
+    async def retry_login(self, auth, password, result):
+        try:
+            while not auth["done"].is_set():
+                await self.wait_login(auth, self.login_timeout(result))
+                async with self.lock:
+                    if auth["done"].is_set():
+                        return
+                    self.require_ready()
+                    if self.radio is not auth["radio"]:
+                        raise ConnectionError("Companion gewechselt")
+                    self.login_log(auth, "attempt_timeout")
+                    # Never retransmit before an unusually large firmware estimate.
+                    hint = (result.payload or {}).get("suggested_timeout", 0)
+                    if auth["attempt"] >= 3 or (isinstance(hint, (int, float)) and hint > 300000):
+                        self.finish_login(auth, "timeout")
+                        return
+                    if auth["mode"] == "AUTO":
+                        contact = await self.read_contact_route(auth["target"])
+                        if auth["done"].is_set():
+                            return
+                        path = (contact.get("out_path_len"), contact.get("out_path"), contact.get("out_path_hash_mode"))
+                        unknown = path[0] in (-1, 255)
+                        # Only one flood per login sequence. A newly learned
+                        # direct path can still use the remaining attempt budget.
+                        if auth["flood_sent"] and unknown:
+                            self.finish_login(auth, "timeout")
+                            return
+                        if (auth["route"] == "direct" and path == auth.get("path")
+                                and self.path_revision == auth.get("path_revision")
+                                and not auth["fallback"] and not auth["flood_sent"]):
+                            await self.reset_contact_route(auth["target"])
+                            auth["fallback"] = True
+                            self.login_log(auth, "flood_fallback")
+                        if auth["done"].is_set():
+                            return
+                    result = await self.send_login_attempt(auth, password)
+        except asyncio.CancelledError:
+            self.finish_login(auth, "cancelled")
+            raise
+        except (RuntimeError, TimeoutError, ConnectionError, HTTPException, AttributeError, KeyError):
+            self.finish_login(auth, "error")
+        finally:
+            if self.auth is auth:
+                self.auth = None
 
     async def repeater_action(self, target, action, value=""):
         if action == "login" and ("\x00" in value or len(value.encode("utf-8")) > 15):
@@ -1072,12 +1235,7 @@ class Bridge:
                 raise HTTPException(409, "Bitte die laufende Anmeldung abwarten.")
             try:
                 if action == "login":
-                    session["status"] = "logging_in"
-                    self.changed()
-                    result = await self.command("send_login", target, value)
-                    if session["status"] == "logging_in":
-                        timeout = max(10.0, result.payload.get("suggested_timeout", 10000) / 1000 * 1.2)
-                        self.repeater_login_tasks[target] = asyncio.create_task(self.repeater_login_expiry(target, timeout))
+                    await self.start_login(target, value, session)
                 elif action == "logout":
                     await self.command("send_logout", target)
                     session.update(status="disconnected", replies=[])
@@ -1100,28 +1258,16 @@ class Bridge:
         return contact
 
     def invalidate_rooms(self):
-        for task in self.repeater_login_tasks.values():
-            task.cancel()
-        self.repeater_login_tasks.clear()
+        if self.auth:
+            self.finish_login(self.auth, "cancelled")
+            if self.auth["task"]:
+                self.auth["task"].cancel()
+            self.auth = None
         self.route_status.clear()
         for session in self.repeaters.values():
             session["status"] = "disconnected"
-        if self.room_login_task:
-            self.room_login_task.cancel()
-            self.room_login_task = None
         for room in self.rooms.values():
             room.update(status="disconnected", can_post=False, error=None)
-
-    async def room_login_expiry(self, target, timeout):
-        try:
-            await asyncio.sleep(timeout)
-            room = self.rooms[target]
-            if room["status"] == "logging_in":
-                room.update(status="failed", can_post=False,
-                            error="Keine Anmeldebestätigung. Passwort und Erreichbarkeit prüfen.")
-                self.changed()
-        except asyncio.CancelledError:
-            pass
 
     async def login_room(self, target, password):
         if "\x00" in password or len(password.encode("utf-8")) > 15:
@@ -1131,22 +1277,17 @@ class Bridge:
             self.require_room(target)
             if self.repeaters.get(target, {}).get("status") in ("logging_in", "logged_in"):
                 raise HTTPException(409, "Zuerst die CLI-Sitzung unter Device abmelden.")
-            if any(room["status"] == "logging_in" for room in self.rooms.values()):
-                raise HTTPException(409, "Eine Roomserver-Anmeldung läuft bereits.")
+            self.require_login_idle()
             if target in self.room_sends:
                 raise HTTPException(409, "Bitte den laufenden Room-Beitrag abwarten.")
-            self.rooms[target] = {"status": "logging_in", "can_post": False, "error": None}
-            self.changed()
+            self.rooms[target] = {"status": "disconnected", "can_post": False, "error": None}
             try:
-                result = await self.command("send_login", target, password)
+                await self.start_login(target, password, self.rooms[target], room=True)
             except (RuntimeError, TimeoutError, ConnectionError):
                 # Never return command details that could contain credentials.
                 self.rooms[target].update(status="failed", error="Anmeldung konnte nicht gesendet werden.")
                 self.changed()
                 raise HTTPException(502, "Anmeldung konnte nicht gesendet werden.") from None
-            if self.rooms[target]["status"] == "logging_in":
-                timeout = max(10.0, result.payload.get("suggested_timeout", 10000) / 1000 * 1.2)
-                self.room_login_task = asyncio.create_task(self.room_login_expiry(target, timeout))
             return self.snapshot()
 
     async def logout_room(self, target):
@@ -1156,9 +1297,11 @@ class Bridge:
             if self.repeaters.get(target, {}).get("status") in ("logging_in", "logged_in"):
                 raise HTTPException(409, "Zuerst die CLI-Sitzung unter Device abmelden.")
             await self.command("send_logout", target)
-            if self.rooms.get(target, {}).get("status") == "logging_in" and self.room_login_task:
-                self.room_login_task.cancel()
-                self.room_login_task = None
+            if self.auth and self.auth["target"] == target:
+                self.finish_login(self.auth, "cancelled")
+                if self.auth["task"]:
+                    self.auth["task"].cancel()
+                self.auth = None
             mid = self.room_sends.get(target)
             if mid in self.pending_dms:
                 self.pending_dms[mid].cancel()
