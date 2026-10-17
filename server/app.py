@@ -386,6 +386,9 @@ class Bridge:
         self.emit("radio", event)
 
     async def on_event(self, event):
+        if event.type == EventType.CLI_REPLY:
+            # Local CLI output can contain credentials. Return only to its caller.
+            return
         p = public(event.payload or {})
         name = event.type.name
         if name in ("DISCOVER_RESPONSE", "ADVERTISEMENT", "NEW_CONTACT") or (name == "RX_LOG_DATA" and p.get("payload_type") == 4):
@@ -896,6 +899,25 @@ class Bridge:
             self.log("CHANNEL_REMOVED" if remove else "CHANNEL_ADDED", {"index": index, "name": name})
             self.changed()
             return self.snapshot()
+
+    async def companion_command(self, value):
+        if (not value.strip() or len(value.encode("utf-8")) > 160
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise HTTPException(422, "Kommando: 1–160 UTF-8-Bytes, keine Zeilenumbrüche oder Steuerzeichen.")
+        async with self.lock:
+            self.require_ready()
+            if int(self.device.get("fw ver", 0)) < 14:
+                raise HTTPException(409, "Companion-CLI benötigt Firmware 1.18 oder neuer (Protokoll v14).")
+            prefix = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789") for _ in range(2)) + "|"
+            try:
+                # Firmware reflects the prefix only for at least two command characters.
+                result = await self.command("run_cli_command", prefix + value.ljust(2))
+            except (RuntimeError, TimeoutError, ConnectionError):
+                raise HTTPException(502, "Keine CLI-Antwort. Ausführung unbestätigt; bei Neustart oder Ausschalten kann die Antwort ausbleiben.") from None
+            text = result.payload.get("text")
+            if result.type != EventType.CLI_REPLY or not isinstance(text, str) or not text.startswith(prefix):
+                raise HTTPException(502, "Keine passende CLI-Antwort. Ausführung unbestätigt.")
+            return {"text": text[len(prefix):]}
 
     async def read_device(self):
         result = await self.command("send_device_query")
@@ -1531,6 +1553,10 @@ class RepeaterAction(RoomTarget):
     value: SecretStr = SecretStr("")
 
 
+class CompanionCommand(BaseModel):
+    command: SecretStr
+
+
 class RoomLogin(RoomTarget):
     password: SecretStr = SecretStr("")
 
@@ -1631,6 +1657,10 @@ def create_app(db_path=None, autoconnect=None):
             except (RuntimeError, TimeoutError) as exc:
                 raise HTTPException(502, str(exc) or "Companion-Timeout") from exc
         return bridge.snapshot()
+
+    @app.post("/api/companion/cli")
+    async def companion_cli(request: Request, setting: CompanionCommand):
+        return await request.app.state.bridge.companion_command(setting.command.get_secret_value())
 
     @app.post("/api/trace")
     async def trace(request: Request, setting: TraceInput):

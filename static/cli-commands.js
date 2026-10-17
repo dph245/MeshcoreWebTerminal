@@ -1,6 +1,39 @@
 // MeshCore CLI reference: https://docs.meshcore.io/cli_commands/
 // Syntax checked against meshcore-dev/MeshCore docs/cli_commands.md on 2026-10-09.
 // Kept locally so the reference works without external requests.
+// Companion reference checked on 2026-10-17 against MyMesh::handleCommand in
+// examples/companion_radio/MyMesh.cpp and src/helpers/CommonRadioPrefs.cpp.
+// Deliberately separate from the repeater/room reference below.
+const companionCliCommands = [
+  [['get name', 'set name <name>'], 'Gerätename anzeigen oder ändern.'],
+  [['ver'], 'Firmware-Version und Build anzeigen.'],
+  [['board'], 'Hardware-Bezeichnung anzeigen.'],
+  [['reboot'], 'Neustart; ohne Antwort.'],
+  [['poweroff', 'shutdown'], 'Ausschalten; ohne Antwort, abhängig von der Hardware.'],
+  [['set pin <pin>'], 'Bluetooth-PIN ändern; die Antwort enthält die PIN.'],
+  [['get tz.offset', 'set tz.offset <stunden>'], 'UTC-Zeitversatz: ganze Stunden von −12 bis +14.'],
+  [['get wifi.ssid', 'set wifi.ssid <ssid>'], 'WLAN-Name; benötigt WLAN-Firmware. Nach Änderung neu starten.'],
+  [['get wifi.pwd', 'set wifi.pwd <passwort>'], 'WLAN-Passwort anzeigen oder ändern; benötigt WLAN-Firmware. Nach Änderung neu starten.'],
+  [['get wifi.enabled', 'set wifi.enabled <0|1>'], 'WLAN ausschalten (0) oder einschalten (1); benötigt WLAN-Firmware und Neustart.'],
+  [['get wifi.status'], 'WLAN-Verbindungsstatus; benötigt WLAN-Firmware.'],
+  [['get wifi.ip'], 'Aktuelle WLAN-IP-Adresse; benötigt WLAN-Firmware.'],
+  [['set wifi.clear'], 'WLAN-Zugangsdaten löschen; benötigt WLAN-Firmware und Neustart.'],
+  [['get radio', 'set radio <freq>,<bw>,<sf>,<cr>'], 'Funkparameter: MHz, Bandbreite in kHz, SF 5–12, CR 5–8. Änderung benötigt Neustart.'],
+  [['get freq'], 'Frequenz in MHz anzeigen.'],
+  [['get tx', 'set tx <dbm>'], 'Sendeleistung in dBm; abhängig von der Hardware.'],
+  [['get radio.rxgain', 'set radio.rxgain <on|off>'], 'Empfangsverstärkung; abhängig von der Hardware.'],
+  [['get dutycycle', 'set dutycycle <prozent>'], 'Duty Cycle: 1–100 Prozent.'],
+  [['get af', 'set af <faktor>'], 'Airtime-Faktor: 0–9.'],
+  [['get int.thresh', 'set int.thresh <wert>'], 'Schwellwert für lokale Störungen.'],
+  [['get cad', 'set cad <on|off>'], 'Kanalbelegung vor dem Senden prüfen.'],
+  [['get rxdelay', 'set rxdelay <wert>'], 'Empfangsverzögerung: 0–20.'],
+  [['get agc.reset.interval', 'set agc.reset.interval <sekunden>'], 'AGC-Reset: 0–1020 Sekunden, auf Vielfache von 4 abgerundet; 0 = aus.'],
+  [['get path.hash.mode', 'set path.hash.mode <0|1|2>'], 'Pfad-Hash-Länge: 0 = 1 Byte, 1 = 2 Bytes, 2 = 3 Bytes.'],
+  [['get multi.acks', 'set multi.acks <0|1>'], 'Zusätzliches ACK ausschalten (0) oder einschalten (1).'],
+  [['get txdelay', 'set txdelay <faktor>'], 'Zufällige Flood-Sendeverzögerung: Faktor 0–2.'],
+  [['get direct.txdelay', 'set direct.txdelay <faktor>'], 'Zufällige Direkt-Sendeverzögerung: Faktor 0–2.'],
+];
+
 const meshcoreCliCommands = [
   {"commands": [{"syntax": "reboot","serial": false}],"description": "Neustart; ohne Antwort.","role": null},
   {"commands": [{"syntax": "poweroff","serial": false},{"syntax": "shutdown","serial": false}],"description": "Ausschalten; ohne Antwort, abhängig von der Hardware.","role": null},

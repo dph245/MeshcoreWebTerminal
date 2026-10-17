@@ -85,8 +85,30 @@
         <p id="contact-feedback" class="channel-feedback" role="status"></p>
       </article></section>
       <section id="device-companion" role="tabpanel" aria-labelledby="device-companion-nav" hidden>
+        <nav class="tabs device-tabs" role="tablist" aria-label="Companion-CLI">
+          <button id="companion-console-nav" role="tab" aria-controls="companion-console" aria-selected="true">Konsole</button>
+          <button id="companion-reference-nav" role="tab" aria-controls="companion-reference" aria-selected="false" tabindex="-1">Kommandos</button>
+        </nav>
+        <section id="companion-console" role="tabpanel" aria-labelledby="companion-console-nav">
+        <section id="companion-cli" class="companion-cli" aria-labelledby="companion-cli-heading">
+          <h2 id="companion-cli-heading">CLI</h2>
+          <form id="companion-command-form" class="scope-form">
+            <label for="companion-command">Kommando</label>
+            <div class="scope-fields"><input id="companion-command" placeholder="get name" autocomplete="off" spellcheck="false" maxlength="160"><button id="companion-send" class="button" type="submit">Senden</button></div>
+          </form>
+          <p id="companion-cli-status" role="status"></p>
+          <pre id="companion-replies" class="repeater-replies" role="log" aria-label="Companion CLI-Antworten"></pre>
+          <button id="companion-cli-clear" class="button compact" type="button">Ausgabe löschen</button>
+        </section>
             <div class="sidebar-bottom"><span class="device-icon">▣</span><div><strong id="device-name">Dein Companion</strong><small id="endpoint">192.168.88.14:5000</small></div><span id="device-dot" class="status-dot"></span></div><button id="refresh" class="button compact">Vom Companion neu laden</button>
         <article class="panel radio-panel"><div class="panel-heading"><h2>Companion</h2><span class="pill">RADIO</span></div><dl id="radio-info"><div><dt>Adresse</dt><dd>192.168.88.14:5000</dd></div><div><dt>Gerät</dt><dd>Warte auf Verbindung</dd></div></dl><div class="radio-note">Der Monitor zeigt die vom Companion gemeldeten Pakete und Signalwerte.</div></article>
+        </section>
+        <section id="companion-reference" role="tabpanel" aria-labelledby="companion-reference-nav" hidden>
+          <label class="search"><input id="companion-command-search" type="search" placeholder="Kommando suchen …" aria-label="Companion-Kommandos durchsuchen"></label>
+          <p class="cli-reference-note">Stand 17.10.2026 · Verfügbarkeit je nach Firmware und Hardware. Zusätzliche Board-Befehle sind möglich. <a href="https://github.com/meshcore-dev/MeshCore/blob/main/examples/companion_radio/MyMesh.cpp" target="_blank" rel="noopener noreferrer">Companion</a> · <a href="https://github.com/meshcore-dev/MeshCore/blob/main/src/helpers/CommonRadioPrefs.cpp" target="_blank" rel="noopener noreferrer">Funkbefehle</a></p>
+          <table class="cli-reference-table"><thead><tr><th scope="col">Kommando</th><th scope="col">Beschreibung</th></tr></thead><tbody id="companion-command-list"></tbody></table>
+          <p id="companion-command-empty" class="cli-reference-note" role="status" hidden>Keine passenden Kommandos.</p>
+        </section>
       </section>
       <section id="companion-settings" role="tabpanel" aria-labelledby="companion-settings-nav" hidden>
       <div class="monitor-settings">

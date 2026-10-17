@@ -9,6 +9,7 @@ let pathHashSaving = false, pathHashDirty = false;
 let multiAcksSaving = false, multiAcksDirty = false;
 let roomSaving = false, discoveryBusy = false, repeaterBusy = false;
 let traceBusy=false;
+let companionCliBusy=false;
 const traceDraft=[''];
 const traceStatuses={sending:'Wird gesendet',waiting:'Warte auf Antwort',complete:'Vollständig',partial:'Messwerte fehlen',timeout:'Keine Antwort innerhalb der Wartezeit',interrupted:'Unterbrochen',unconfirmed:'Sendestatus unbestätigt'};
 const drafts = new Map();
@@ -147,7 +148,76 @@ function updateConnection() {
   renderTrace();
   renderContactManager();
   renderRepeater();
+  renderCompanionCli();
 }
+function commandHistory(input, getKey) {
+  // Session-only: CLI commands can contain credentials. Never persist them.
+  const histories=new Map();
+  let key, entries=[], index=0, draft='';
+  function reset() {index=entries.length;draft='';}
+  function sync() {
+    const next=getKey();
+    if(next===key)return;
+    if(key!==undefined)input.value='';
+    key=next;
+    if(!histories.has(key)) {
+      if(histories.size>=50)histories.delete(histories.keys().next().value);
+      histories.set(key,[]);
+    }
+    entries=histories.get(key);reset();
+  }
+  input.title='Kommandohistorie: ↑ / ↓ (nur in diesem Browser-Tab)';
+  input.addEventListener('input',()=>{sync();reset();});
+  input.addEventListener('keydown',event=>{
+    if(input.disabled||event.isComposing||event.ctrlKey||event.altKey||event.metaKey||event.shiftKey||!['ArrowUp','ArrowDown'].includes(event.key))return;
+    sync();
+    if(!entries.length)return;
+    event.preventDefault();
+    if(index===entries.length)draft=input.value;
+    index=Math.max(0,Math.min(entries.length,index+(event.key==='ArrowUp'?-1:1)));
+    input.value=index===entries.length?draft:entries[index];
+    input.setSelectionRange(input.value.length,input.value.length);
+    // Refresh send-button validation without resetting the history cursor.
+    input.oninput?.();
+  });
+  return {sync,remember(value) {
+    sync();
+    if(value.trim()&&entries.at(-1)!==value) {
+      entries.push(value);
+      if(entries.length>50)entries.shift();
+    }
+    reset();
+  }};
+}
+const companionHistoryKey=()=>state.info.public_key||`${state.host}:${state.port}`;
+const companionCommandHistory=commandHistory($('companion-command'),companionHistoryKey);
+const repeaterCommandHistory=commandHistory($('repeater-command'),()=>JSON.stringify([companionHistoryKey(),$('repeater-target').value]));
+function renderCompanionCli() {
+  companionCommandHistory.sync();
+  const available=Number(state.device['fw ver'])>=14;
+  const connected=backendOnline&&state.status==='connected';
+  $('companion-command').disabled=!connected||!available||companionCliBusy;
+  const value=$('companion-command').value;
+  $('companion-send').disabled=$('companion-command').disabled||!value.trim()||encoder.encode(value).length>160;
+  if(!connected) $('companion-cli-status').textContent='Companion nicht verbunden.';
+  else if(!available) $('companion-cli-status').textContent='Companion-CLI benötigt Firmware 1.18 oder neuer (Protokoll v14).';
+  else $('companion-cli-status').textContent=companionCliBusy?'Warte auf CLI-Antwort …':'';
+}
+$('companion-command').oninput=renderCompanionCli;
+$('companion-cli-clear').onclick=()=>{$('companion-replies').textContent='';};
+$('companion-command-form').onsubmit=async e=>{
+  e.preventDefault();
+  if($('companion-send').disabled)return;
+  const command=$('companion-command').value;
+  companionCommandHistory.remember(command);
+  companionCliBusy=true;$('companion-command').value='';renderCompanionCli();
+  const output=$('companion-replies');
+  try {
+    const result=await api('/api/companion/cli',{command});
+    output.textContent=(output.textContent+result.text+'\n').slice(-16000);
+  } catch(e) {output.textContent=(output.textContent+e.message+'\n').slice(-16000);}
+  finally {companionCliBusy=false;renderCompanionCli();output.scrollTop=output.scrollHeight;if(!$('companion-command').disabled)$('companion-command').focus();}
+};
 function renderDiscoveries() {
   const connected=backendOnline&&state.status==='connected';
   $('discover').disabled=!connected||discoveryBusy;
@@ -570,6 +640,7 @@ function renderRepeater() {
   renderCliReference();
   renderRouteDiagnostics();
   const session=state.repeaters?.[select.value], status=session?.status||'disconnected';
+  repeaterCommandHistory.sync();
   const blocked=!backendOnline||state.status!=='connected'||!entries.length||repeaterBusy||status==='logging_in';
   select.disabled=repeaterBusy;
   $('repeater-password').disabled=blocked;
@@ -585,6 +656,7 @@ function renderRepeater() {
 async function repeaterAction(action) {
   const target=$('repeater-target').value;
   const value=action==='login'?$('repeater-password').value:action==='command'?$('repeater-command').value:'';
+  if(action==='command')repeaterCommandHistory.remember(value);
   $('repeater-password').value='';repeaterBusy=true;renderRepeater();$('repeater-feedback').textContent='';
   try {
     applyState(await api('/api/repeaters',{target,action,value}));
@@ -621,6 +693,40 @@ for(const [index,tab] of ['terminal','monitor','device','mesh'].entries()) {
     if(e.key==='Home')next=0;
     if(e.key==='End')next=3;
     if(next!==undefined){e.preventDefault();showTab(tabs[next]);$(tabs[next]+'-nav').focus();}
+  };
+}
+
+function renderCompanionReference() {
+  const query=$('companion-command-search').value.trim().toLocaleLowerCase('de');
+  const entries=companionCliCommands.filter(([commands,description])=>
+    `${commands.join(' ')} ${description}`.toLocaleLowerCase('de').includes(query));
+  $('companion-command-list').replaceChildren(...entries.map(([commands,description])=>{
+    const row=node('tr'), syntax=node('td');
+    for(const command of commands) {const line=node('div');line.append(node('code','',command));syntax.append(line);}
+    row.append(syntax,node('td','',description));return row;
+  }));
+  $('companion-command-empty').hidden=entries.length>0;
+}
+$('companion-command-search').oninput=renderCompanionReference;
+const companionTabs=['companion-console','companion-reference'];
+function showCompanionTab(tab) {
+  for(const name of companionTabs) {
+    const selected=name===tab, button=$(name+'-nav');
+    $(name).hidden=!selected;
+    button.setAttribute('aria-selected',String(selected));
+    button.tabIndex=selected?0:-1;
+  }
+  if(tab==='companion-reference')renderCompanionReference();
+}
+for(const [index,tab] of companionTabs.entries()) {
+  const button=$(tab+'-nav');
+  button.onclick=()=>showCompanionTab(tab);
+  button.onkeydown=e=>{
+    let next;
+    if(e.key==='ArrowRight'||e.key==='ArrowLeft')next=1-index;
+    if(e.key==='Home')next=0;
+    if(e.key==='End')next=1;
+    if(next!==undefined){e.preventDefault();showCompanionTab(companionTabs[next]);$(companionTabs[next]+'-nav').focus();}
   };
 }
 
