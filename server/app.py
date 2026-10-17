@@ -372,7 +372,10 @@ class Bridge:
                 and isinstance(count, int) and 1 <= count <= 63 and size in (1, 2, 3)
                 and isinstance(path, str) and len(path) == count * size * 2
                 and all(c in "0123456789abcdefABCDEF" for c in path)):
-            self.last_hops[path[-size * 2:].lower()] = {"time": event["time"], "snr": p.get("snr", p.get("SNR"))}
+            self.last_hops[path[-size * 2:].lower()] = {
+                "time": event["time"], "snr": p.get("snr", p.get("SNR")),
+                "rssi": p.get("rssi", p.get("RSSI")),
+            }
         if kind == "RX_LOG_DATA" and event["payload"].get("payload_type") == 5:
             event["payload"]["received_scope"] = packet_scope(
                 event["payload"], [self.default_scope, *self.channel_scopes.values()])

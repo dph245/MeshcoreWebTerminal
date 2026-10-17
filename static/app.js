@@ -457,7 +457,7 @@ function renderLastHops() {
   });
   $('last-hops').replaceChildren(...entries.map(([hash,entry])=>{
     const row=node('tr');
-    row.append(node('td','',hopName(hash)),node('td','',Number.isFinite(entry.snr)?entry.snr:'—'),node('td','',new Date(entry.time*1000).toLocaleTimeString('de-DE')));
+    row.append(node('td','',hopName(hash)),node('td','',Number.isFinite(entry.snr)?entry.snr:'—'),node('td','',Number.isFinite(entry.rssi)?entry.rssi:'—'),node('td','',new Date(entry.time*1000).toLocaleTimeString('de-DE')));
     return row;
   }));
   $('last-hops-empty').hidden=entries.length>0;
@@ -584,7 +584,7 @@ stream.addEventListener('state',e=>{const wasOnline=backendOnline;applyState(JSO
 stream.addEventListener('radio',e=>{
   const event=JSON.parse(e.data), hash=packetLastHop(event), p=event.payload||{};
   if(/^(?:[0-9a-f]{2}){1,3}$/.test(hash)&&Number.isFinite(event.time)&&(!state.last_hops[hash]||event.time>=state.last_hops[hash].time)) {
-    state.last_hops[hash]={time:event.time,snr:p.snr??p.SNR};
+    state.last_hops[hash]={time:event.time,snr:p.snr??p.SNR,rssi:p.rssi??p.RSSI};
   }
   renderLastHops();
   renderRouteDiagnostics();

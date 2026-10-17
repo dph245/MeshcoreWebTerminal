@@ -1191,20 +1191,22 @@ def test_last_hops_window_survives_event_limit(bridge):
                     path_hash_size=len(path)//2, path=path, snr=snr, **extra)
 
     with patch('server.app.time.time', return_value=1000):
-        bridge.log('RX_LOG_DATA', packet('aabbcc', 9))
+        bridge.log('RX_LOG_DATA', packet('aabbcc', 9, rssi=-92))
         bridge.log('RX_LOG_DATA', packet('dd', -3))
         for _ in range(305):
             bridge.log('RAW_DATA', {})
         assert len(bridge.events) == 300
-        assert bridge.snapshot()['last_hops']['aabbcc'] == {'time': 1000, 'snr': 9}
+        assert bridge.snapshot()['last_hops']['aabbcc'] == {'time': 1000, 'snr': 9, 'rssi': -92}
+        assert bridge.snapshot()['last_hops']['dd']['rssi'] is None
     with patch('server.app.time.time', return_value=1010):
-        bridge.log('RX_LOG_DATA', packet('aabbcc', -5))
+        bridge.log('RX_LOG_DATA', packet('aabbcc', -5, RSSI=-105))
         bridge.log('RX_LOG_DATA', {**packet('ee', 20), 'route_type': 2})
         bridge.log('RX_LOG_DATA', {**packet('ff', 20), 'payload_type': 9})
         bridge.log('RX_LOG_DATA', {**packet('aa', 20), 'path_len': 0, 'path': ''})
         bridge.log('RX_LOG_DATA', {**packet('bb', 20), 'path_len': 2})
         assert set(bridge.snapshot()['last_hops']) == {'aabbcc', 'dd'}
         assert bridge.snapshot()['last_hops']['aabbcc']['snr'] == -5
+        assert bridge.snapshot()['last_hops']['aabbcc']['rssi'] == -105
     with patch('server.app.time.time', return_value=1300):
         assert set(bridge.snapshot()['last_hops']) == {'aabbcc'}
     with patch('server.app.time.time', return_value=1310):
