@@ -457,7 +457,7 @@ function renderLastHops() {
   });
   $('last-hops').replaceChildren(...entries.map(([hash,entry])=>{
     const row=node('tr');
-    row.append(node('td','',hash),node('td','',Number.isFinite(entry.snr)?entry.snr:'—'),node('td','',new Date(entry.time*1000).toLocaleTimeString('de-DE')));
+    row.append(node('td','',hopName(hash)),node('td','',Number.isFinite(entry.snr)?entry.snr:'—'),node('td','',new Date(entry.time*1000).toLocaleTimeString('de-DE')));
     return row;
   }));
   $('last-hops-empty').hidden=entries.length>0;
