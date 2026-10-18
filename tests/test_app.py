@@ -709,9 +709,11 @@ def test_outgoing_channel_echo_count_and_deduplication(bridge):
         message = bridge.store.history('channel', '0')[0]
         timestamp = int(message['timestamp'])
         assert message['repeater_count'] == 0
+        assert message['repeater_hashes'] == []
         for path in ['aa0001', 'aa0001', 'bb0002aa0001', 'bb0002', 'cc0003', 'dd0004']:
             await bridge.on_event(echo_event(timestamp, path))
         assert bridge.store.history('channel', '0')[0]['repeater_count'] == 4
+        assert bridge.store.history('channel', '0')[0]['repeater_hashes'] == ['aa0001', 'bb0002', 'cc0003', 'dd0004']
         for changes in [{'message': 'Fremdes Radio: Moin'}, {'chan_name': '#anders'}, {'chan_hash': 'cd'},
                         {'sender_timestamp': timestamp+1}, {'route_type': 2}, {'payload_type': 4},
                         {'path_len': 0, 'path': ''}, {'path': 'nohex!'}]:
@@ -743,6 +745,7 @@ def test_repeater_count_survives_restart_and_ignores_ambiguous_transmission(tmp_
     store.db.close()
     store = Store(path)
     assert store.history('channel', '0')[0]['repeater_count'] == 1
+    assert store.history('channel', '0')[0]['repeater_hashes'] == ['ab1234']
     store.save('channel', '0', 'out', 'Moin', 123, 'sent', echo_key=key)
     assert not store.record_repeater(key, 'cd5678')
     store.db.close()

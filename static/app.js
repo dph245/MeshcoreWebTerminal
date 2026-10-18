@@ -529,6 +529,7 @@ async function loadMessages(before=null) {
     const merged=new Map(messageRows.map(m=>[m.id,m]));
     for(const item of items) merged.set(item.id,item);
     messageRows=[...merged.values()].sort((a,b)=>a.id-b.id);
+    const openReceipts=new Set([...list.querySelectorAll('.message-receipts[open]')].map(el=>el.dataset.messageId));
     list.replaceChildren();
     const fragment=document.createDocumentFragment();
     if(olderAvailable){const older=node('button','button load-older','Ältere Nachrichten laden');older.onclick=()=>loadMessages(messageRows[0].id);fragment.append(older);}
@@ -541,6 +542,14 @@ async function loadMessages(before=null) {
       const sender=message.direction==='out'?'Du':selection.kind==='room'?roomAuthor(message.sender_key):selection.kind==='dm'?contactName(message.target):selection.name;
       wrap.append(node('div','bubble',message.text));
       const meta=node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`);
+      if(message.direction==='out'&&selection.kind==='channel'&&message.status==='sent'&&message.repeater_hashes?.length) {
+        meta.textContent=`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · `;
+        const receipts=node('details','message-receipts');
+        receipts.dataset.messageId=String(message.id);
+        receipts.open=openReceipts.has(String(message.id));
+        receipts.append(node('summary','',labels.sent),node('div','repeater-hashes',`Hashes: ${message.repeater_hashes.join(', ')}`));
+        meta.append(receipts);
+      }
       if(message.repeater_count>0) meta.title='Anhand zurückgehörter Weiterleitungen: unterschiedliche letzte Hop-Hashes, keine vollständige Empfangsbestätigung. Hash-Kollisionen können die Anzahl verringern.';
       wrap.append(meta);
       if(message.tx_path) {

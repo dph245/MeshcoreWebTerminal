@@ -116,8 +116,17 @@ with sync_playwright() as p:
     expect(page.locator('.message-meta')).to_contain_text('An Companion übergeben')
     for count in range(1,5):
         messages[0]['repeater_count']=count
+        messages[0]['repeater_hashes']=['aa', 'bb0012', 'cc34', 'dd0004'][:count]
         page.evaluate("stream.listeners.message({data:'{}'})")
         expect(page.locator('.message-meta')).to_contain_text(f'von {count} '+('Repeater' if count==1 else 'Repeatern')+' empfangen')
+    expect(page.locator('.repeater-hashes')).to_be_hidden()
+    page.locator('.message-receipts summary').click()
+    expect(page.locator('.repeater-hashes')).to_be_visible()
+    expect(page.locator('.repeater-hashes')).to_have_text('Hashes: aa, bb0012, cc34, dd0004')
+    page.evaluate("stream.listeners.message({data:'{}'})")
+    expect(page.locator('.repeater-hashes')).to_be_visible()
+    page.locator('.message-receipts summary').press('Enter')
+    expect(page.locator('.repeater-hashes')).to_be_hidden()
     messages.clear()
     page.locator('#contacts button').click()
     expect(page.locator('#channel-scope-form')).to_be_hidden()

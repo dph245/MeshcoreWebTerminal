@@ -220,7 +220,14 @@ class Store:
             "SELECT *, (SELECT count(*) FROM repeater_receipts WHERE message_id=messages.id) AS repeater_count FROM messages WHERE kind=? AND target=? AND id<? ORDER BY id DESC LIMIT 100",
             (kind, target, before or 9223372036854775807)).fetchall()
         result = [dict(row) for row in reversed(rows)]
+        receipts = {message["id"]: [] for message in result}
+        if receipts:
+            placeholders = ",".join("?" for _ in receipts)
+            for mid, hop in self.db.execute(
+                    f"SELECT message_id, hop FROM repeater_receipts WHERE message_id IN ({placeholders}) ORDER BY hop", tuple(receipts)):
+                receipts[mid].append(hop)
         for message in result:
+            message["repeater_hashes"] = receipts[message["id"]]
             message["reception"] = json.loads(message["reception"]) if message["reception"] else None
         return result
 
