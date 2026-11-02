@@ -127,6 +127,26 @@ with sync_playwright() as p:
     expect(page.locator('.repeater-hashes')).to_be_visible()
     page.locator('.message-receipts summary').press('Enter')
     expect(page.locator('.repeater-hashes')).to_be_hidden()
+    nickname = 'Fünk <img src=x onerror=alert(1)>'
+    messages.append({'id':50,'direction':'in','text':nickname+': Hallo Mesh',
+                     'timestamp':time.time(),'status':'received','target':'0'})
+    page.evaluate("stream.listeners.message({data:'{}'})")
+    author = page.get_by_role('button', name=nickname, exact=True)
+    author.click()
+    expect(page.locator('#message-text')).to_have_value(f'@[{nickname}] ')
+    expect(page.locator('#message-text')).to_be_focused()
+    assert page.locator('.bubble img').count() == 0
+    assert len(sent) == 1, 'Mention click must not send a message'
+    expect(page.locator('#message-counter')).to_have_text(
+        f'{len(f"@[{nickname}]".encode())} / {160-len("Simulierter Companion: ".encode())} Bytes')
+    page.locator('#message-text').fill('Hallo zusammen')
+    page.locator('#message-text').evaluate('(el)=>el.setSelectionRange(6,14)')
+    author.click()
+    expect(page.locator('#message-text')).to_have_value(f'Hallo @[{nickname}] ')
+    page.locator('#channels button').filter(has_text='anderer').click()
+    page.locator('#channels button').filter(has_text='Public').click()
+    expect(page.locator('#message-text')).to_have_value(f'Hallo @[{nickname}] ')
+    page.locator('#message-text').fill('')
     messages.clear()
     page.locator('#contacts button').click()
     expect(page.locator('#channel-scope-form')).to_be_hidden()

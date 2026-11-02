@@ -148,6 +148,27 @@ with sync_playwright() as p:
     page.locator('#pause').click()
     expect(page.locator('#events tr')).to_have_count(1)
     expect(page.locator('#events')).to_contain_text('Test relay')
+    # A long conversation list must scroll inside the terminal, ending at the composer.
+    state['channels'] += [dict(index=i, name=f'#Channel {i}') for i in range(2, 42)]
+    state['contacts'].update({f'{i:064x}': dict(type=1, adv_name=f'Kontakt {i}') for i in range(80)})
+    state['contacts'].update({f'{i:064x}': dict(type=3, adv_name=f'Room {i}') for i in range(80, 100)})
+    refresh()
+    page.locator('#terminal-nav').click()
+    page.locator('#contacts button').filter(has_text='Zoe').click()
+    for width, height in [(1440, 900), (1024, 600), (800, 500), (390, 844)]:
+        page.set_viewport_size(dict(width=width, height=height))
+        page.evaluate('window.scrollTo(0,0)')
+        layout = page.evaluate('''()=>{
+          const composer=document.querySelector('#composer').getBoundingClientRect();
+          const terminal=document.querySelector('#terminal').getBoundingClientRect();
+          return {bottom:composer.bottom, terminalBottom:terminal.bottom,
+                  pageHeight:document.documentElement.scrollHeight, viewport:innerHeight};
+        }''')
+        assert abs(layout['terminalBottom'] - layout['bottom']) <= 13, (width, layout)
+        assert layout['pageHeight'] <= max(layout['viewport'], layout['bottom'] + 13), (width, layout)
+        if width > 700:
+            assert layout['pageHeight'] <= height + 1, (width, layout)
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
     assert not errors, errors
     browser.close()
 print('Unread and sorting checks passed (desktop/mobile, simulated API).')

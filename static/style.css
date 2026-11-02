@@ -345,9 +345,19 @@ main { margin: 0; min-height: 100dvh; }
 .tabs { display: flex; align-self: stretch; gap: 16px; }
 .tabs button { color: var(--muted); background: none; border: 0; border-bottom: 2px solid transparent; padding: 14px 4px; font-size: 14px; }
 .tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
-#terminal { display: flex; flex: 1; min-height: calc(100dvh - 50px); }
+#terminal { display: flex; flex: 1; min-height: 0; }
 #terminal .sidebar { position: static; width: 230px; flex: 0 0 230px; padding: 12px 10px; display: flex; }
+#terminal .nav-list { position: relative; }
 .terminal-content { flex: 1; min-width: 0; }
+@media(min-width:701px) {
+  main:has(> #terminal:not([hidden])) { height: 100dvh; min-height: 0; }
+  #terminal .sidebar { min-height: 0; overflow-y: auto; }
+  #terminal .sidebar > * { flex-shrink: 0; }
+  #terminal .terminal-content { min-height: 0; }
+  #terminal .chat { height: 100%; min-height: 0; }
+  #terminal .messages { min-height: 0; }
+  #terminal .composer { flex-shrink: 0; }
+}
 #terminal-empty { align-items: flex-start; padding: 24px; }
 #channel-manager, #contact-manager { margin: 0; }
 
@@ -450,5 +460,6 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
 #route-dialog {width:min(720px, 92vw);max-height:90vh;overflow:auto;}
 #route-hops li {display:flex;gap:.5rem;margin:.5rem 0;}
 #route-hops input {flex:1;min-width:0;}
-#route-current, #chat-routing-text, #repeater-routing-text {overflow-wrap:anywhere;}
-#chat-routing {padding:.4rem 1rem;font-size:.85rem;}
+#route-current, #repeater-routing-text {overflow-wrap:anywhere;}
+#chat-route-edit {margin-left:auto;}
+.message-sender {padding:0;border:0;background:none;color:inherit;font:inherit;text-decoration:underline;text-underline-offset:2px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;}

@@ -15,7 +15,7 @@ import uuid
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from meshcore import EventType, MeshCore
 from meshcore.tcp_cx import TCPConnection
@@ -1645,6 +1645,8 @@ def create_app(db_path=None, autoconnect=None):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+        if not request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.get("/api/state")
@@ -1791,7 +1793,19 @@ def create_app(db_path=None, autoconnect=None):
                 bridge.listeners.discard(queue)
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent.parent / "static", html=True), name="static")
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+    @app.api_route("/index.html", methods=["GET", "HEAD"], include_in_schema=False)
+    async def index():
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        for asset in static_dir.iterdir():
+            if asset.is_file() and asset.suffix in {".js", ".css", ".svg"}:
+                version = hashlib.sha256(asset.read_bytes()).hexdigest()[:16]
+                html = html.replace(f'"/{asset.name}"', f'"/{asset.name}?v={version}"')
+        return HTMLResponse(html)
+
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app
 
 

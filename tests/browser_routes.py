@@ -4,9 +4,12 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 STATIC = Path(__file__).resolve().parents[1] / 'static'
-KEY, RELAY = 'ab' * 32, 'cd' * 32
-state = dict(status='connected', host='test', port=5000, channels=[], contacts={
+KEY, RELAY, OTHER = 'ab' * 32, 'cd' * 32, 'ef' * 32
+ROOM = '12' * 32
+state = dict(status='connected', host='test', port=5000, channels=[dict(index=0, name='Public')], contacts={
     KEY: dict(type=1, adv_name='Chat'), RELAY: dict(type=2, adv_name='Relay'),
+    OTHER: dict(type=1, adv_name='Anderer Kontakt'),
+    ROOM: dict(type=3, adv_name='Roomserver'),
     'cd' * 31 + 'ef': dict(type=2, adv_name='Collision')}, events=[], info={}, device={}, stats={}, routes={})
 requests = []
 messages = []
@@ -41,9 +44,13 @@ with sync_playwright() as p:
     };''')
     page.goto('http://mesh.test/')
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
-    page.locator('#device-nav').click()
-    page.locator('#contact-manager-nav').click()
-    page.locator('#managed-contacts .managed-channel').filter(has_text='Chat').get_by_role('button', name='AUTO · Route').click()
+    page.locator('#channels button').click()
+    expect(page.locator('#chat-route-edit')).to_be_hidden()
+    page.locator('#contacts button').filter(has_text='Chat').click()
+    expect(page.locator('.chat-heading #chat-route-edit')).to_have_text('Routing · AUTO')
+    page.locator('#message-text').fill('Entwurf bleibt')
+    page.locator('#chat-route-edit').click()
+    expect(page.locator('#route-title')).to_have_text('Route · Chat')
     page.locator('#route-mode').select_option('MANUAL')
     expect(page.locator('#route-save')).to_be_disabled()
     page.locator('#route-hops input').fill(RELAY)
@@ -60,21 +67,31 @@ with sync_playwright() as p:
     page.locator('#route-save').click()
     expect(page.locator('#route-feedback')).to_contain_text('In SQLite gespeichert')
     assert requests[0]['path'] == ['00', RELAY, 'cd']
+    assert requests[0]['target'] == KEY
     expect(page.locator('#route-current')).to_contain_text('Noch nicht aktiviert')
     page.locator('#route-close').click()
     messages.append(dict(id=1, direction='out', text='Test', timestamp=1000, status='unconfirmed',
                          tx_mode='MANUAL', tx_route='direct', tx_attempt=3, tx_path=json.dumps(['00','cd','cd'])))
     page.locator('#terminal-nav').click()
-    page.locator('#contacts button').click()
-    expect(page.locator('#chat-routing summary')).to_have_text('Routing · MANUAL')
+    page.locator('#contacts button').filter(has_text='Chat').click()
+    expect(page.locator('#chat-route-edit')).to_have_text('Routing · MANUAL')
+    expect(page.locator('#chat-routing')).to_have_count(0)
+    expect(page.locator('#message-text')).to_have_value('Entwurf bleibt')
     expect(page.locator('.message-meta')).to_contain_text('ACK-Timeout')
     expect(page.locator('.message-path summary')).to_have_text('MANUAL · DIRECT · Versuch 3')
     expect(page.locator('.message-path p')).to_be_hidden()
     page.locator('.message-path summary').click()
     expect(page.locator('.message-path p')).to_contain_text('Tatsächlich gesendete Hopfolge nicht übermittelt')
-    page.locator('#device-nav').click()
-    page.locator('#managed-contacts .managed-channel').filter(has_text='Chat').get_by_role('button', name='MANUAL · Route').click()
+    page.locator('#contacts button').filter(has_text='Anderer Kontakt').click()
+    expect(page.locator('#chat-route-edit')).to_have_text('Routing · AUTO')
+    page.locator('#chat-route-edit').click()
+    expect(page.locator('#route-title')).to_have_text('Route · Anderer Kontakt')
+    expect(page.locator('#route-mode')).to_have_value('AUTO')
+    page.locator('#route-close').click()
+    assert OTHER not in state['routes']
+    page.locator('#contacts button').filter(has_text='Chat').click()
     page.set_viewport_size({'width':390,'height':844})
+    page.locator('#chat-route-edit').click()
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     expect(page.locator('#route-preview')).to_have_text('00 → cd → cd')
     page.locator('#route-size').select_option('3')
@@ -83,7 +100,38 @@ with sync_playwright() as p:
     page.locator('#route-save').click()
     expect(page.locator('#route-current')).to_have_text('AUTO · FLOOD · kein gespeicherter Pfad')
     assert len(requests) == 2
+    assert requests[1]['target'] == KEY
     page.locator('#route-close').click()
+    expect(page.locator('#chat-route-edit')).to_have_text('Routing · AUTO')
+    for width in [1280, 390]:
+        page.set_viewport_size({'width':width,'height':844})
+        page.locator('#rooms button').click()
+        expect(page.locator('.chat-heading #chat-route-edit')).to_have_text('Routing · AUTO')
+        page.locator('#message-text').fill('Room-Entwurf')
+        page.locator('#chat-route-edit').click()
+        expect(page.locator('#route-title')).to_have_text('Route · Roomserver')
+        page.locator('#route-mode').select_option('MANUAL')
+        page.locator('#route-size').select_option('1')
+        page.locator('#route-hops input').fill('cd')
+        page.locator('#route-save').click()
+        expect(page.locator('#route-feedback')).to_contain_text('In SQLite gespeichert')
+        assert requests[-1]['target'] == ROOM
+        expect(page.locator('#route-current')).to_contain_text('Autonome Room-Synchronisation')
+        page.locator('#route-close').click()
+        expect(page.locator('#chat-route-edit')).to_have_text('Routing · MANUAL')
+        expect(page.locator('#message-text')).to_have_value('Room-Entwurf')
+        page.locator('#contacts button').filter(has_text='Chat').click()
+        expect(page.locator('#chat-route-edit')).to_have_text('Routing · AUTO')
+        page.locator('#rooms button').click()
+        page.locator('#chat-route-edit').click()
+        expect(page.locator('#route-preview')).to_have_text('cd')
+        page.locator('#route-mode').select_option('AUTO')
+        page.locator('#route-save').click()
+        expect(page.locator('#route-feedback')).to_have_text('AUTO aktiv.')
+        assert requests[-1]['target'] == ROOM
+        page.locator('#route-close').click()
+        expect(page.locator('#chat-route-edit')).to_have_text('Routing · AUTO')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     assert not errors, errors
     browser.close()
 print('Static route browser checks passed')

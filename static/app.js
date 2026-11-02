@@ -540,7 +540,23 @@ async function loadMessages(before=null) {
       if(selection.kind==='room')labels.delivered='Vom Roomserver angenommen ✓';
       if(message.direction==='out'&&selection.kind==='channel'&&message.repeater_count>0) labels.sent=`von ${message.repeater_count} ${message.repeater_count===1?'Repeater':'Repeatern'} empfangen`;
       const sender=message.direction==='out'?'Du':selection.kind==='room'?roomAuthor(message.sender_key):selection.kind==='dm'?contactName(message.target):selection.name;
-      wrap.append(node('div','bubble',message.text));
+      const bubble=node('div','bubble');
+      const senderEnd=selection.kind==='channel'&&message.direction==='in'?message.text.indexOf(': '):-1;
+      if(senderEnd>0) {
+        const nickname=message.text.slice(0,senderEnd);
+        const author=node('button','message-sender',nickname);
+        author.type='button';
+        author.title=`@[${nickname}] einfügen`;
+        author.onclick=()=>{
+          const input=$('message-text'),start=input.selectionStart,end=input.selectionEnd;
+          const prefix=start>0&&!/\s/.test(input.value[start-1])?' ':'';
+          const suffix=end===input.value.length||!/\s/.test(input.value[end])?' ':'';
+          input.setRangeText(`${prefix}@[${nickname}]${suffix}`,start,end,'end');
+          rememberDraft();updateComposer();input.focus();
+        };
+        bubble.append(author,document.createTextNode(message.text.slice(senderEnd)));
+      } else bubble.textContent=message.text;
+      wrap.append(bubble);
       const meta=node('div','message-meta',`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · ${labels[message.status]||message.status}`);
       if(message.direction==='out'&&selection.kind==='channel'&&message.status==='sent'&&message.repeater_hashes?.length) {
         meta.textContent=`${sender} · ${new Date(message.timestamp*1000).toLocaleString('de-DE',{dateStyle:'short',timeStyle:'short'})} · `;
@@ -908,12 +924,13 @@ function routeDiagnostic(target) {
   return `MANUAL · Konfiguriert: ${route.path.join(' → ')} · ${detail}${status?.path?' · '+status.path.join(' → '):''}${status?.tx==='direct'?' · DIRECT-Versand bestätigt (Hopfolge nicht übermittelt)':''}${state.contacts[target]?.type===3?' · Autonome Room-Synchronisation und Antwortwege sind nicht statisch erzwingbar.':''}`;
 }
 function renderRouteDiagnostics() {
-  const chat=$('chat-routing');
-  chat.hidden=!selection||selection.kind==='channel';
-  chat.querySelector('summary').textContent=`Routing · ${state.routes?.[selection?.target]?'MANUAL':'AUTO'}`;
-  $('chat-routing-text').textContent=selection?routeDiagnostic(selection.target):'';
+  const edit=$('chat-route-edit');
+  edit.hidden=!['dm','room'].includes(selection?.kind)||selection.unknown||!state.contacts[selection.target]||selection.target.length!==64;
+  edit.textContent=`Routing · ${state.routes?.[selection?.target]?'MANUAL':'AUTO'}`;
+  edit.title=selection?routeDiagnostic(selection.target):'';
   $('repeater-routing-text').textContent=routeDiagnostic($('repeater-target').value);
 }
+$('chat-route-edit').onclick=()=>{if(['dm','room'].includes(selection?.kind)&&!$('chat-route-edit').hidden)openRouteEditor(selection.target);};
 function openRouteEditor(target) {
   routeTarget=target;
   const route=state.routes?.[target];
