@@ -590,6 +590,221 @@ function updateComposer() {
   $('send').disabled=sending||scopeSaving||channelSaving||roomBlocked||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>limit;
   $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
 }
+function showEmojiPicker(open) {
+  $('emoji-picker').hidden=!open;
+  $('emoji-toggle').setAttribute('aria-expanded',String(open));
+}
+/*
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+*/
+// Unicode Emoji 17.0 Food & Drink, plus mushroom and shellfish emojis.
+// German labels: CLDR 48. Sources and license: docs/emoji-data.md.
+const foodEmojis = [
+  ["🍇", "Trauben"],
+  ["🍈", "Honigmelone"],
+  ["🍉", "Wassermelone"],
+  ["🍊", "Mandarine"],
+  ["🍋", "Zitrone"],
+  ["🍋‍🟩", "Limette"],
+  ["🍌", "Banane"],
+  ["🍍", "Ananas"],
+  ["🥭", "Mango"],
+  ["🍎", "roter Apfel"],
+  ["🍏", "grüner Apfel"],
+  ["🍐", "Birne"],
+  ["🍑", "Pfirsich"],
+  ["🍒", "Kirschen"],
+  ["🍓", "Erdbeere"],
+  ["🫐", "Blaubeeren"],
+  ["🥝", "Kiwi"],
+  ["🍅", "Tomate"],
+  ["🫒", "Olive"],
+  ["🥥", "Kokosnuss"],
+  ["🥑", "Avocado"],
+  ["🍆", "Aubergine"],
+  ["🥔", "Kartoffel"],
+  ["🥕", "Karotte"],
+  ["🌽", "Maiskolben"],
+  ["🌶️", "Peperoni"],
+  ["🫑", "Paprika"],
+  ["🥒", "Gurke"],
+  ["🥬", "Blattgemüse"],
+  ["🥦", "Brokkoli"],
+  ["🧄", "Knoblauch"],
+  ["🧅", "Zwiebel"],
+  ["🥜", "Erdnuss"],
+  ["🫘", "Bohnen"],
+  ["🌰", "Kastanie"],
+  ["🫚", "Ingwer"],
+  ["🫛", "Erbsenschote"],
+  ["🍄‍🟫", "brauner Pilz"],
+  ["🫜", "Wurzelgemüse"],
+  ["🍞", "Brot"],
+  ["🥐", "Croissant"],
+  ["🥖", "Baguette"],
+  ["🫓", "Fladenbrot"],
+  ["🥨", "Brezel"],
+  ["🥯", "Bagel"],
+  ["🥞", "Pfannkuchen"],
+  ["🧇", "Waffel"],
+  ["🧀", "Käsestück"],
+  ["🍖", "Fleischhachse"],
+  ["🍗", "Hähnchenschenkel"],
+  ["🥩", "Fleischstück"],
+  ["🥓", "Bacon"],
+  ["🍔", "Hamburger"],
+  ["🍟", "Pommes frites"],
+  ["🍕", "Pizza"],
+  ["🌭", "Hotdog"],
+  ["🥪", "Sandwich"],
+  ["🌮", "Taco"],
+  ["🌯", "Burrito"],
+  ["🫔", "Tamale"],
+  ["🥙", "Döner"],
+  ["🧆", "Falafel"],
+  ["🥚", "Ei"],
+  ["🍳", "Spiegelei in Bratpfanne"],
+  ["🥘", "Pfannengericht"],
+  ["🍲", "Topf mit Essen"],
+  ["🫕", "Fondue"],
+  ["🥣", "Schüssel mit Löffel"],
+  ["🥗", "Salat"],
+  ["🍿", "Popcorn"],
+  ["🧈", "Butter"],
+  ["🧂", "Salz"],
+  ["🥫", "Konserve"],
+  ["🍱", "Bento-Box"],
+  ["🍘", "Reiscracker"],
+  ["🍙", "Reisbällchen"],
+  ["🍚", "Reis in Schüssel"],
+  ["🍛", "Reis mit Curry"],
+  ["🍜", "Schüssel und Essstäbchen"],
+  ["🍝", "Spaghetti"],
+  ["🍠", "geröstete Süßkartoffel"],
+  ["🍢", "Oden"],
+  ["🍣", "Sushi"],
+  ["🍤", "frittierte Garnele"],
+  ["🍥", "Fischfrikadelle"],
+  ["🥮", "Mondkuchen"],
+  ["🍡", "Dango"],
+  ["🥟", "Teigtasche"],
+  ["🥠", "Glückskeks"],
+  ["🥡", "Takeaway-Schachtel"],
+  ["🍦", "Softeis"],
+  ["🍧", "Wassereis"],
+  ["🍨", "Eiscreme"],
+  ["🍩", "Donut"],
+  ["🍪", "Keks"],
+  ["🎂", "Geburtstagskuchen"],
+  ["🍰", "Torte"],
+  ["🧁", "Cupcake"],
+  ["🥧", "Kuchen"],
+  ["🍫", "Schokoladentafel"],
+  ["🍬", "Bonbon"],
+  ["🍭", "Lutscher"],
+  ["🍮", "Pudding"],
+  ["🍯", "Honigtopf"],
+  ["🍼", "Babyflasche"],
+  ["🥛", "Glas Milch"],
+  ["☕", "Heißgetränk"],
+  ["🫖", "Teekanne"],
+  ["🍵", "Teetasse ohne Henkel"],
+  ["🍶", "Sake-Flasche mit Tasse"],
+  ["🍾", "Flasche mit knallendem Korken"],
+  ["🍷", "Weinglas"],
+  ["🍸", "Cocktailglas"],
+  ["🍹", "Cocktail"],
+  ["🍺", "Bierkrug"],
+  ["🍻", "Bierkrüge"],
+  ["🥂", "Sektgläser"],
+  ["🥃", "Trinkglas"],
+  ["🫗", "Flüssigkeit ausgießen"],
+  ["🥤", "Becher mit Strohhalm"],
+  ["🧋", "Bubble Tea"],
+  ["🧃", "Trinkpäckchen"],
+  ["🧉", "Mate-Tee"],
+  ["🧊", "Eiswürfel"],
+  ["🥢", "Essstäbchen"],
+  ["🍽️", "Teller mit Messer und Gabel"],
+  ["🍴", "Messer und Gabel"],
+  ["🥄", "Löffel"],
+  ["🔪", "Küchenmesser"],
+  ["🫙", "Einmachglas"],
+  ["🏺", "Amphore"],
+  ["🍄", "Fliegenpilz"],
+  ["🦀", "Krebs"],
+  ["🦞", "Hummer"],
+  ["🦐", "Garnele"],
+  ["🦑", "Tintenfisch"],
+  ["🦪", "Auster"]
+];
+for(const [emoji,label] of [
+  ['😀','Grinsen'],['😊','Lächeln'],['😂','Lachen'],['😉','Zwinkern'],
+  ['😎','Sonnenbrille'],['🤔','Nachdenken'],['😅','Erleichtert'],['😢','Traurig'],
+  ['👍','Daumen hoch'],['👎','Daumen runter'],['👋','Winken'],['🙏','Danke'],
+  ['👌','Okay'],['💪','Stark'],['🎉','Feiern'],['❤️','Herz'],
+  ['✅','Bestätigt'],['❌','Nein'],['⚠️','Warnung'],['❓','Frage'],
+  ['📡','Antenne'],['📻','Radio'],['🔋','Batterie'],['📍','Standort'],
+  ...foodEmojis
+]) {
+  const button=node('button','emoji-choice',emoji);
+  button.type='button';button.title=label;button.setAttribute('aria-label',`${label} ${emoji}`);
+  button.onclick=()=>{
+    const input=$('message-text');
+    input.setRangeText(emoji,input.selectionStart,input.selectionEnd,'end');
+    rememberDraft();updateComposer();showEmojiPicker(false);input.focus();
+  };
+  $('emoji-picker').append(button);
+}
+$('emoji-toggle').onclick=()=>{
+  const open=$('emoji-picker').hidden;
+  showEmojiPicker(open);
+  if(open)$('emoji-picker').querySelector('button').focus();
+};
+$('composer').addEventListener('keydown',event=>{
+  if(event.key==='Escape'&&!$('emoji-picker').hidden) {
+    event.preventDefault();showEmojiPicker(false);$('emoji-toggle').focus();
+  }
+});
+document.addEventListener('click',event=>{if(!$('composer').contains(event.target))showEmojiPicker(false);});
 $('contact-search').oninput=renderNav;
 $('event-filter').onchange=renderEvents;
 $('pause').onclick=()=>{paused=!paused;if(paused)pausedEvents=state.events.slice();$('pause').textContent=paused?'Fortsetzen':'Pausieren';if(!paused)renderEvents();};
