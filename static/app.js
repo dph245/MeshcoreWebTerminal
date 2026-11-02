@@ -68,6 +68,7 @@ function appendUnread(button,s) {
 }
 function markVisibleRead() {
   const list=$('messages');
+  if(!list.getClientRects().length)return;
   if(activeTab!=='terminal'||!selection||document.visibilityState!=='visible'||list.scrollHeight-list.scrollTop-list.clientHeight>=120)return;
   const latest=Math.max(0,...messageRows.filter(m=>m.direction==='in').map(m=>m.id));
   const key=navigationKey(selection);
@@ -78,6 +79,7 @@ $('conversation-sort').onchange=()=>{navigation.sort=$('conversation-sort').valu
 $('messages').addEventListener('scroll',markVisibleRead);
 document.addEventListener('visibilitychange',markVisibleRead);
 function renderNav() {
+  $('conversation-return').hidden=!selection;
   $('channel-count').textContent=state.channels.length;
   $('channels').replaceChildren();
   if(!state.channels.length) $('channels').append(node('p','nav-empty','Keine Channels geladen.'));
@@ -487,8 +489,38 @@ function renderEvents() {
 }
 
 function rememberDraft() {if(selection) drafts.set(keyFor(selection),$('message-text').value);}
+function showConversationList(open) {
+  $('terminal').classList.toggle('conversations-open',open);
+  showEmojiPicker(false);
+  if(!open)requestAnimationFrame(markVisibleRead);
+}
+$('conversation-back').onclick=()=>{
+  showConversationList(true);
+  $('conversation-return').focus();
+};
+$('conversation-return').onclick=()=>{
+  showConversationList(false);
+  $('conversation-back').focus();
+};
+$('chat-options-toggle').onclick=()=>{
+  const open=$('terminal').classList.toggle('chat-options-open');
+  $('chat-options-toggle').setAttribute('aria-expanded',String(open));
+};
+function updateViewportHeight() {
+  if(!window.visualViewport||window.visualViewport.scale===1)
+    document.documentElement.style.setProperty('--app-height',`${window.visualViewport?.height||window.innerHeight}px`);
+  updateComposer();
+}
+window.visualViewport?.addEventListener('resize',updateViewportHeight);
+window.addEventListener('resize',updateViewportHeight);
+updateViewportHeight();
 async function openChat(s) {
   rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;
+  showConversationList(false);
+  $('terminal').classList.remove('chat-options-open');
+  $('chat-options-toggle').setAttribute('aria-expanded','false');
+  $('chat-options-toggle').hidden=!['channel','room'].includes(s.kind);
+  $('chat-options-toggle').textContent=s.kind==='room'?'Anmeldung':'Scope';
   navigation.opened[navigationKey(s)]=Date.now();saveNavigation();
   $('channel-scope-feedback').textContent='';renderScopes();
   $('room-password').value='';renderRoom();
@@ -588,7 +620,7 @@ function updateComposer() {
   $('message-counter').classList.toggle('danger',length>limit);
   const roomBlocked=selection?.kind==='room'&&(!state.rooms?.[selection.target]?.can_post||state.rooms?.[selection.target]?.pending_send||roomSaving);
   $('send').disabled=sending||scopeSaving||channelSaving||roomBlocked||!backendOnline||state.status!=='connected'||!selection||selection.unknown||length===0||length>limit;
-  $('send').textContent=sending?'Wird gesendet …':'Nachricht senden ↗';
+  $('send').textContent=sending?'Wird gesendet …':window.matchMedia('(max-width:700px)').matches?'Senden ↗':'Nachricht senden ↗';
 }
 function showEmojiPicker(open) {
   $('emoji-picker').hidden=!open;

@@ -467,5 +467,35 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
 .emoji-picker {display:grid;grid-template-columns:repeat(8,minmax(0,36px));gap:2px;margin-top:6px;max-height:152px;overflow-y:auto;overscroll-behavior:contain;}
 .emoji-choice {border:0;border-radius:3px;background:none;color:var(--text);font-size:22px;min-width:0;height:36px;padding:0;}
 .emoji-choice:hover {background:var(--button-hover);}
+.mobile-control {display:none;}
+@media(max-width:700px) {
+  main:has(> #terminal:not([hidden])) {height:min(100dvh,var(--app-height,100dvh));min-height:0;}
+  #terminal {display:flex;flex-direction:column;min-height:0;}
+  #terminal .sidebar {flex:1;min-height:0;overflow-y:auto;border-bottom:0;}
+  #terminal .sidebar .nav-list {max-height:none;overflow:visible;flex:none;}
+  #terminal:not(.conversations-open):has(#chat:not([hidden])) .sidebar {display:none;}
+  #terminal.conversations-open .terminal-content, #terminal:has(#chat[hidden]) .terminal-content {display:none;}
+  #terminal .terminal-content {min-height:0;}
+  #terminal .chat {height:100%;min-height:0;}
+  #terminal .messages {min-height:0;max-height:none;}
+  #terminal .composer {flex-shrink:0;margin:0 8px 8px;padding:6px;}
+  #terminal .composer textarea {font-size:16px;min-height:40px;max-height:120px;}
+  #terminal input, #terminal select {font-size:16px;}
+  #terminal .composer-bottom {margin-top:4px;}
+  #terminal .composer > p, #terminal .chat-heading p {display:none;}
+  .mobile-control {display:inline-flex;align-items:center;justify-content:center;min-height:36px;}
+  #conversation-return {margin-bottom:10px;}
+  #conversation-back {font-size:24px;min-width:36px;padding:0 8px;}
+  #terminal .chat-heading {gap:8px;padding:8px;}
+  .chat-heading-title {flex:1;min-width:0;}
+  #terminal .chat-heading h1 {font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #terminal #chat-route-edit, #chat-options-toggle {font-size:12px;margin-left:0;}
+  #terminal:not(.chat-options-open) #channel-scope-form,
+  #terminal:not(.chat-options-open) #room-login-form {display:none;}
+  #channel-scope-form, #room-login-form {max-height:min(180px,25dvh);overflow-y:auto;flex-shrink:0;}
+  #terminal .emoji-picker {max-height:min(114px,20dvh);}
+  .topbar .connection {font-size:12px;padding:3px 0;}
+  .topbar .tabs button {padding:12px 2px;}
+}
 @media(max-width:400px){.composer-bottom {gap:8px;flex-wrap:wrap;}}
 .message-sender {padding:0;border:0;background:none;color:inherit;font:inherit;text-decoration:underline;text-underline-offset:2px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;}

@@ -26,6 +26,8 @@ Lokaler Webclient für einen MeshCore TCP-Companion auf **192.168.88.14:5000**.
 
 Die Anwendung bleibt bei FastAPI, SQLite, SSE und Vanilla-JavaScript, ohne Buildschritt und ausschließlich mit TCP. Der Tabzustand ist von der Gesprächsauswahl getrennt. Weitere Mesh-Operationen können im eigenen Panel ergänzt werden, ohne Terminal oder Monitor zu verändern.
 
+Auf schmalen Bildschirmen zeigt das Terminal die Gesprächsliste oder das ausgewählte Gespräch. Der Pfeil in der Chat-Kopfzeile führt zur Liste zurück; Entwürfe bleiben erhalten. Scope und Room-Anmeldung öffnen sich über die Kopfzeile bei Bedarf. Nachrichten und Gesprächsliste scrollen innerhalb der Ansicht; das Sendefeld bleibt unten.
+
 CSS, JavaScript und Favicon erhalten beim Ausliefern der HTML-Seite automatisch einen SHA-256-basierten Versionsparameter (`?v=…`). Bei geändertem Dateiinhalt ändert sich die URL. HTML und statische Dateien werden mit `Cache-Control: no-cache` ausgeliefert, damit der Browser sie beim nächsten Laden beim Server prüft; unveränderte Dateien können weiter über ETag/304 wiederverwendet werden. Dafür ist kein Buildschritt nötig.
 
 Für den Netzmonitor wurde die lokale MeshCoreOnAir-LiveView (`static/app.js`, `render`) geprüft: kompakte Empfangszeilen, neueste zuerst, Filter, Pause und Details auf Abruf. Ihre MQTT-/Observer-Gruppierung und ihr Decoder passen nicht zum TCP-SDK-Datenmodell. Deshalb wird die vorhandene Paketdarstellung in `static/packets.js` weiterverwendet und verdichtet; es werden keine Observer-Hashes oder Absender aus Pfad-Hashes erfunden.
@@ -132,6 +134,7 @@ werden pro Browser gespeichert und bleiben beim Neuladen erhalten.
 .venv/bin/python tests/browser_discovery.py
 .venv/bin/python tests/browser_contacts.py
 .venv/bin/python tests/browser_navigation.py
+.venv/bin/python tests/browser_mobile.py
 ```
 
 Die Tests verwenden einen simulierten Companion und senden nichts ins Funknetz. Sie prüfen Persistenz, Duplikaterkennung, Empfangsrouting, UTF-8-Grenzen, ACKs, Fehlerfälle und API-Schutz.

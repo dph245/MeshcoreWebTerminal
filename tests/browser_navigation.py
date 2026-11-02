@@ -154,6 +154,7 @@ with sync_playwright() as p:
     state['contacts'].update({f'{i:064x}': dict(type=3, adv_name=f'Room {i}') for i in range(80, 100)})
     refresh()
     page.locator('#terminal-nav').click()
+    if page.locator('#conversation-back').is_visible():page.locator('#conversation-back').click()
     page.locator('#contacts button').filter(has_text='Zoe').click()
     for width, height in [(1440, 900), (1024, 600), (800, 500), (390, 844)]:
         page.set_viewport_size(dict(width=width, height=height))
@@ -169,6 +170,13 @@ with sync_playwright() as p:
         if width > 700:
             assert layout['pageHeight'] <= height + 1, (width, layout)
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+    page.locator('#conversation-back').click()
+    message('dm', ZOE[:12])
+    expect(page.locator('#contacts .unread-dot')).to_have_count(1)
+    expect(page.locator('.terminal-content')).to_be_hidden()
+    page.locator('#conversation-return').click()
+    expect(page.locator('#contacts .unread-dot')).to_have_count(0)
+    expect(page.locator('#message-text')).to_have_value('Entwurf bleibt')
     assert not errors, errors
     browser.close()
 print('Unread and sorting checks passed (desktop/mobile, simulated API).')

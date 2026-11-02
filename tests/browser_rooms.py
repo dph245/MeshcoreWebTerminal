@@ -104,6 +104,8 @@ with sync_playwright() as p:
     expect(page.locator('#room-status')).to_have_text('Nicht angemeldet')
     expect(page.locator('#send')).to_be_disabled()
     page.set_viewport_size({'width': 390, 'height': 844})
+    expect(page.locator('#rooms button')).to_be_hidden()
+    page.locator('#conversation-back').click()
     expect(page.locator('#rooms button')).to_be_visible()
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     assert not errors, errors

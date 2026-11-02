@@ -105,6 +105,7 @@ with sync_playwright() as p:
     expect(page.locator('#chat-route-edit')).to_have_text('Routing · AUTO')
     for width in [1280, 390]:
         page.set_viewport_size({'width':width,'height':844})
+        if width<=700:page.locator('#conversation-back').click()
         page.locator('#rooms button').click()
         expect(page.locator('.chat-heading #chat-route-edit')).to_have_text('Routing · AUTO')
         page.locator('#message-text').fill('Room-Entwurf')
@@ -120,8 +121,10 @@ with sync_playwright() as p:
         page.locator('#route-close').click()
         expect(page.locator('#chat-route-edit')).to_have_text('Routing · MANUAL')
         expect(page.locator('#message-text')).to_have_value('Room-Entwurf')
+        if width<=700:page.locator('#conversation-back').click()
         page.locator('#contacts button').filter(has_text='Chat').click()
         expect(page.locator('#chat-route-edit')).to_have_text('Routing · AUTO')
+        if width<=700:page.locator('#conversation-back').click()
         page.locator('#rooms button').click()
         page.locator('#chat-route-edit').click()
         expect(page.locator('#route-preview')).to_have_text('cd')
