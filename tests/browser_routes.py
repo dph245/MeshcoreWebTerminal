@@ -46,8 +46,27 @@ with sync_playwright() as p:
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
     page.locator('#channels button').click()
     expect(page.locator('#chat-route-edit')).to_be_hidden()
+    expect(page.locator('#chat-route-summary')).to_be_hidden()
     page.locator('#contacts button').filter(has_text='Chat').click()
     expect(page.locator('.chat-heading #chat-route-edit')).to_have_text('Routing · AUTO')
+    summary = page.locator('.chat-heading #chat-route-summary')
+    expect(summary).to_have_text('AUTO · Pfad unbekannt')
+    for fields, text in [
+        (dict(out_path_len=-1, out_path=''), 'AUTO · FLOOD'),
+        (dict(out_path_len=255), 'AUTO · FLOOD'),
+        (dict(out_path_len=0), 'AUTO · DIRECT · direkt'),
+        (dict(out_path_len=2, out_path='cd00', out_path_hash_mode=0), 'AUTO · DIRECT · cd → 00'),
+        (dict(out_path_len=2, out_path='cdef0000', out_path_hash_mode=1), 'AUTO · DIRECT · cdef → 0000'),
+        (dict(out_path_len=2, out_path='cdef12000000', out_path_hash_mode=2), 'AUTO · DIRECT · cdef12 → 000000'),
+        (dict(out_path_len=2, out_path='bad'), 'AUTO · DIRECT · 2 Hops'),
+    ]:
+        state['contacts'][KEY].update(fields)
+        page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+        expect(summary).to_have_text(text)
+    state['route_status'] = {KEY: dict(state='stale')}
+    page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+    expect(summary).to_have_text('AUTO · Pfad veraltet')
+    state['route_status'] = {}
     page.locator('#message-text').fill('Entwurf bleibt')
     page.locator('#chat-route-edit').click()
     expect(page.locator('#route-title')).to_have_text('Route · Chat')
@@ -70,6 +89,12 @@ with sync_playwright() as p:
     assert requests[0]['target'] == KEY
     expect(page.locator('#route-current')).to_contain_text('Noch nicht aktiviert')
     page.locator('#route-close').click()
+    expect(summary).to_have_text('MANUAL · 00 → cd → cd · noch nicht aktiviert')
+    for status, text in [('confirmed', 'aktiviert'), ('stale', 'veraltet'), ('failed', 'Aktivierung fehlgeschlagen')]:
+        state['route_status'] = {KEY: dict(state=status)}
+        page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+        expect(summary).to_have_text(f'MANUAL · 00 → cd → cd · {text}')
+    state['route_status'] = {}
     messages.append(dict(id=1, direction='out', text='Test', timestamp=1000, status='unconfirmed',
                          tx_mode='MANUAL', tx_route='direct', tx_attempt=3, tx_path=json.dumps(['00','cd','cd'])))
     page.locator('#terminal-nav').click()
@@ -120,6 +145,15 @@ with sync_playwright() as p:
         expect(page.locator('#route-current')).to_contain_text('Autonome Room-Synchronisation')
         page.locator('#route-close').click()
         expect(page.locator('#chat-route-edit')).to_have_text('Routing · MANUAL')
+        expect(summary).to_be_visible()
+        expect(summary).to_have_text('MANUAL · cd · noch nicht aktiviert')
+        # Long routes stay compact; the complete path remains in the editor.
+        state['routes'][ROOM]['path'] = ['abcdef'] * 21
+        page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+        expect(summary).to_contain_text(' → '.join(['abcdef'] * 21))
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        state['routes'][ROOM]['path'] = ['cd']
+        page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
         expect(page.locator('#message-text')).to_have_value('Room-Entwurf')
         if width<=700:page.locator('#conversation-back').click()
         page.locator('#contacts button').filter(has_text='Chat').click()

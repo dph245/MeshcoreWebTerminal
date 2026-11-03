@@ -1164,17 +1164,39 @@ function routeDiagnostic(target) {
   const route=state.routes?.[target], status=state.route_status?.[target];
   if(!route){
     const contact=state.contacts[target], length=contact?.out_path_len;
-    const actual=status?.state==='stale'?'Companion-Pfad muss neu gelesen werden':length===-1||length===255?'FLOOD · kein gespeicherter Pfad':Number.isInteger(length)&&length>=0?`DIRECT · ${length} Hops im Companion`:'Companion-Pfad unbekannt';
+    const actual=status?.state==='stale'?'Companion-Pfad muss neu gelesen werden':length===-1||length===255?'FLOOD · kein gespeicherter Pfad':Number.isInteger(length)&&length>=0?`DIRECT · ${length} Hops im Companion · ${chatRouteSummary(target).split(' · ').slice(2).join(' · ')}`:'Companion-Pfad unbekannt';
     return `AUTO · ${actual}`;
   }
   const detail={confirmed:'Vor Versand zurückgelesen',activating:'Routenaktivierung läuft',stale:'Pfadänderung empfangen · erneute Aktivierung beim Versand',failed:status?.error}[status?.state]||'Noch nicht aktiviert';
   return `MANUAL · Konfiguriert: ${route.path.join(' → ')} · ${detail}${status?.path?' · '+status.path.join(' → '):''}${status?.tx==='direct'?' · DIRECT-Versand bestätigt (Hopfolge nicht übermittelt)':''}${state.contacts[target]?.type===3?' · Autonome Room-Synchronisation und Antwortwege sind nicht statisch erzwingbar.':''}`;
+}
+function chatRouteSummary(target) {
+  const route=state.routes?.[target], status=state.route_status?.[target];
+  if(route) {
+    const detail={confirmed:'aktiviert',activating:'Aktivierung läuft',stale:'veraltet',failed:'Aktivierung fehlgeschlagen'}[status?.state]||'noch nicht aktiviert';
+    return `MANUAL · ${route.path.join(' → ')} · ${detail}`;
+  }
+  if(status?.state==='stale')return 'AUTO · Pfad veraltet';
+  const contact=state.contacts[target], length=contact?.out_path_len;
+  if(length===-1||length===255)return 'AUTO · FLOOD';
+  if(length===0)return 'AUTO · DIRECT · direkt';
+  if(Number.isInteger(length)&&length>0&&length<=63) {
+    const path=contact.out_path, size=contact.out_path_hash_mode+1;
+    const hops=typeof path==='string'&&/^[0-9a-f]+$/i.test(path)&&[1,2,3].includes(size)&&path.length===length*size*2
+      ?path.match(new RegExp(`.{${size*2}}`,'g')).join(' → '):`${length} Hops`;
+    return `AUTO · DIRECT · ${hops}`;
+  }
+  return 'AUTO · Pfad unbekannt';
 }
 function renderRouteDiagnostics() {
   const edit=$('chat-route-edit');
   edit.hidden=!['dm','room'].includes(selection?.kind)||selection.unknown||!state.contacts[selection.target]||selection.target.length!==64;
   edit.textContent=`Routing · ${state.routes?.[selection?.target]?'MANUAL':'AUTO'}`;
   edit.title=selection?routeDiagnostic(selection.target):'';
+  const summary=$('chat-route-summary');
+  summary.hidden=edit.hidden;
+  summary.textContent=edit.hidden?'':chatRouteSummary(selection.target);
+  summary.title=edit.title;
   $('repeater-routing-text').textContent=routeDiagnostic($('repeater-target').value);
 }
 $('chat-route-edit').onclick=()=>{if(['dm','room'].includes(selection?.kind)&&!$('chat-route-edit').hidden)openRouteEditor(selection.target);};
