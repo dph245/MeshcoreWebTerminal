@@ -60,12 +60,6 @@ function sortConversations(items) {
     return a.name.replace(/^#/,'').localeCompare(b.name.replace(/^#/,''),'de',{sensitivity:'base'})||a.target.localeCompare(b.target);
   });
 }
-function appendUnread(button,s) {
-  if((conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0)) {
-    const dot=node('span','unread-dot');dot.title='Ungelesene Nachrichten';dot.setAttribute('aria-hidden','true');
-    button.append(dot,node('span','sr-only',' · Ungelesene Nachrichten'));
-  }
-}
 function markVisibleRead() {
   const list=$('messages');
   if(!list.getClientRects().length)return;
@@ -78,35 +72,41 @@ $('conversation-sort').value=navigation.sort;
 $('conversation-sort').onchange=()=>{navigation.sort=$('conversation-sort').value;saveNavigation();renderNav();};
 $('messages').addEventListener('scroll',markVisibleRead);
 document.addEventListener('visibilitychange',markVisibleRead);
+function renderConversationPicker(id,kind,items,placeholder,empty) {
+  const picker=$(id), conversations=sortConversations(items);
+  const options=[node('option','',items.length?placeholder:empty)];
+  options[0].value='';
+  for(const s of conversations) {
+    const unread=(conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0);
+    const option=node('option','',`${s.name}${unread?' · Ungelesen':''}`);
+    option.value=s.target;
+    if(unread)option.dataset.unread='true';
+    options.push(option);
+  }
+  // Keep the native dropdown intact when a state update has no navigation changes.
+  const signature=JSON.stringify(options.map(o=>[o.value,o.textContent]));
+  if(picker.dataset.options!==signature) {
+    picker.replaceChildren(...options);
+    picker.dataset.options=signature;
+  }
+  picker.disabled=!items.length;
+  picker.value=selection?.kind===kind?selection.target:'';
+  picker.onchange=()=>{
+    const chosen=conversations.find(s=>s.target===picker.value);
+    if(chosen)openChat(chosen);
+  };
+}
 function renderNav() {
   $('conversation-return').hidden=!selection;
-  $('channel-count').textContent=state.channels.length;
-  $('channels').replaceChildren();
-  if(!state.channels.length) $('channels').append(node('p','nav-empty','Keine Channels geladen.'));
-  for(const s of sortConversations(state.channels.map(channel=>({kind:'channel',target:String(channel.index),name:channel.name})))) {
-    const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':''));
-    b.append(node('span','','#'),node('span','nav-name',s.name.replace(/^#/,''))); appendUnread(b,s); b.onclick=()=>openChat(s); $('channels').append(b);
-  }
-  const contacts=Object.entries(state.contacts).filter(([,c])=>c.type===1).sort((a,b)=>(a[1].adv_name||a[0]).localeCompare(b[1].adv_name||b[0]));
+  const channels=state.channels.map(c=>({kind:'channel',target:String(c.index),name:c.name}));
+  const contacts=Object.entries(state.contacts).filter(([,c])=>c.type===1).map(([target,c])=>({kind:'dm',target,name:c.adv_name||target,unknown:!!c.unknown}));
+  const rooms=Object.entries(state.contacts).filter(([,c])=>c.type===3).map(([target,c])=>({kind:'room',target,name:c.adv_name||target,unknown:!!c.unknown}));
+  $('channel-count').textContent=channels.length;
   $('contact-count').textContent=contacts.length;
-  $('contacts').replaceChildren();
-  const search=$('contact-search').value.toLowerCase();
-  for(const s of sortConversations(contacts.map(([key,c])=>({kind:'dm',target:key,name:c.adv_name||key,unknown:!!c.unknown})))) {
-    const {name,target:key}=s;
-    if(!`${name} ${key}`.toLowerCase().includes(search)) continue;
-    const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':'')); b.title=key;
-    b.append(node('span','contact-avatar',name.slice(0,2).toUpperCase()),node('span','nav-name',name)); appendUnread(b,s); b.onclick=()=>openChat(s); $('contacts').append(b);
-  }
-  if(!contacts.length) $('contacts').append(node('p','nav-empty','Chat-Kontakte erscheinen nach dem Verbinden.'));
-  const rooms=Object.entries(state.contacts).filter(([,c])=>c.type===3).sort((a,b)=>(a[1].adv_name||a[0]).localeCompare(b[1].adv_name||b[0]));
   $('room-count').textContent=rooms.length;
-  $('rooms').replaceChildren();
-  for(const s of sortConversations(rooms.map(([key,c])=>({kind:'room',target:key,name:c.adv_name||key,unknown:!!c.unknown})))) {
-    const b=node('button','nav-item'+(keyFor(selection)===keyFor(s)?' active':''));b.title=s.target;
-    b.append(node('span','','▤'),node('span','nav-name',s.name));appendUnread(b,s);b.onclick=()=>openChat(s);$('rooms').append(b);
-  }
-  if(!rooms.length) $('rooms').append(node('p','nav-empty','Keine Roomserver im Companion gespeichert.'));
-
+  renderConversationPicker('channels','channel',channels,'Channel auswählen …','Keine Channels geladen');
+  renderConversationPicker('contacts','dm',contacts,'Kontakt auswählen …','Keine Chat-Kontakte geladen');
+  renderConversationPicker('rooms','room',rooms,'Roomserver auswählen …','Keine Roomserver geladen');
 }
 function applyState(data) {
   Object.assign(state,data); backendOnline=true;
@@ -837,7 +837,6 @@ $('composer').addEventListener('keydown',event=>{
   }
 });
 document.addEventListener('click',event=>{if(!$('composer').contains(event.target))showEmojiPicker(false);});
-$('contact-search').oninput=renderNav;
 $('event-filter').onchange=renderEvents;
 $('pause').onclick=()=>{paused=!paused;if(paused)pausedEvents=state.events.slice();$('pause').textContent=paused?'Fortsetzen':'Pausieren';if(!paused)renderEvents();};
 $('connect').onclick=async()=>{try{$('connect').disabled=true;await api('/api/connect',{});}catch(e){error(e.message);updateConnection();}};

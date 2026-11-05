@@ -68,7 +68,7 @@ with sync_playwright() as p:
     expect(page.locator('#contact-feedback')).to_contain_text('Bereits gespeichert')
     expect(page.locator('#new-contact-name')).to_have_value('Duplicate')
     page.locator('#terminal-nav').click()
-    page.locator('#contacts button').click()
+    page.locator('#contacts').select_option(page.locator('#contacts option').nth(1).get_attribute('value'))
     expect(page.locator('#chat')).to_be_visible()
     state['contacts'] = {}
     refresh()  # Deletion by another client closes the now invalid chat.

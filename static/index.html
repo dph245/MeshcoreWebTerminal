@@ -153,13 +153,9 @@
         <aside id="conversation-list" class="sidebar" aria-label="Gespräche">
     <button id="conversation-return" type="button" class="button mobile-control" hidden>Zum Gespräch →</button>
     <label class="nav-sort" for="conversation-sort"><span>Sortierung</span><select id="conversation-sort"><option value="abc">ABC</option><option value="recent">Zuletzt benutzt</option></select></label>
-    <div class="section-label">CHANNELS <span id="channel-count">0</span></div>
-    <div id="channels" class="nav-list"><p class="nav-empty">Noch keine Channels geladen.</p></div>
-    <div class="section-label">DIREKTNACHRICHTEN <span id="contact-count">0</span></div>
-    <label class="search"><span>⌕</span><input id="contact-search" placeholder="Kontakte suchen …" aria-label="Kontakte suchen"></label>
-    <div id="contacts" class="nav-list contacts"></div>
-    <div class="section-label">ROOMSERVER <span id="room-count">0</span></div>
-    <div id="rooms" class="nav-list"></div>
+    <label class="conversation-picker" for="channels"><span>Channels <span id="channel-count">0</span></span><select id="channels"><option value="">Channel auswählen …</option></select></label>
+    <label class="conversation-picker" for="contacts"><span>Direktnachrichten <span id="contact-count">0</span></span><select id="contacts"><option value="">Kontakt auswählen …</option></select></label>
+    <label class="conversation-picker" for="rooms"><span>Roomserver <span id="room-count">0</span></span><select id="rooms"><option value="">Roomserver auswählen …</option></select></label>
   </aside>
       <div class="terminal-content">
       <p id="terminal-empty" class="empty-state">Channel, Kontakt oder Roomserver auswählen.</p>

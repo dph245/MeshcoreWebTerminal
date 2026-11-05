@@ -40,7 +40,8 @@ with sync_playwright() as p:
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})',state)
     expect(page.locator('#conversation-list')).to_be_visible()
     expect(page.locator('.terminal-content')).to_be_hidden()
-    assert page.locator('#conversation-list').evaluate('(el)=>el.scrollHeight>el.clientHeight')
+    expect(page.locator('#conversation-list select')).to_have_count(4)
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
 
     def fits():
         page.wait_for_function('''()=>document.documentElement.scrollHeight<=innerHeight+1
@@ -50,7 +51,7 @@ with sync_playwright() as p:
 
     for width,height in [(390,844),(320,568),(667,375),(390,420)]:
         page.set_viewport_size(dict(width=width,height=height))
-        page.locator('#contacts button').click()
+        page.locator('#contacts').select_option(page.locator('#contacts option').nth(1).get_attribute('value'))
         expect(page.locator('#conversation-list')).to_be_hidden()
         expect(page.locator('#chat-route-edit')).to_be_visible()
         page.locator('#message-text').fill('Mobiler Entwurf')
@@ -69,14 +70,14 @@ with sync_playwright() as p:
         expect(page.locator('#message-text')).to_have_value('Mobiler Entwurf🍕')
         fits()
         page.locator('#conversation-back').click()
-        page.locator('#channels button').first.click()
+        page.locator('#channels').select_option(page.locator('#channels option').nth(1).get_attribute('value'))
         expect(page.locator('#channel-scope-form')).to_be_hidden()
         page.locator('#chat-options-toggle').click()
         expect(page.locator('#channel-scope-form')).to_be_visible()
         fits()
         page.locator('#chat-options-toggle').click()
         page.locator('#conversation-back').click()
-        page.locator('#rooms button').click()
+        page.locator('#rooms').select_option(page.locator('#rooms option').nth(1).get_attribute('value'))
         expect(page.locator('#room-login-form')).to_be_hidden()
         page.locator('#chat-options-toggle').click()
         expect(page.locator('#room-login-form')).to_be_visible()
