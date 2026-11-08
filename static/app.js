@@ -72,43 +72,47 @@ $('conversation-sort').value=navigation.sort;
 $('conversation-sort').onchange=()=>{navigation.sort=$('conversation-sort').value;saveNavigation();renderNav();};
 $('messages').addEventListener('scroll',markVisibleRead);
 document.addEventListener('visibilitychange',markVisibleRead);
-function renderConversationPicker(id,kind,items,placeholder,empty) {
-  const picker=$(id), conversations=sortConversations(items);
-  const options=[node('option','',items.length?placeholder:empty)];
-  options[0].value='';
-  for(const s of conversations) {
-    const unread=(conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0);
-    const option=node('option','',`${s.name}${unread?' · Ungelesen':''}`);
-    option.value=s.target;
-    if(unread)option.dataset.unread='true';
-    options.push(option);
+function showConversationKind() {
+  const kind=$('conversation-kind').value;
+  for(const [id,value] of [['channels','channel'],['contacts','dm'],['rooms','room']]) $(id).hidden=kind!==value;
+}
+$('conversation-kind').onchange=showConversationKind;
+function renderConversationList(id,items,empty) {
+  const list=$(id), conversations=sortConversations(items);
+  const signature=JSON.stringify(conversations.map(s=>[s,(conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0)]));
+  // Preserve focus and scroll position when the conversation list has not changed.
+  if(list.dataset.items!==signature) {
+    const buttons=conversations.map(s=>{
+      const unread=(conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0);
+      const button=node('button','nav-item',`${s.name}${unread?' · Ungelesen':''}`);
+      button.type='button';
+      button.dataset.target=s.target;
+      if(unread)button.dataset.unread='true';
+      button.onclick=()=>openChat(s);
+      return button;
+    });
+    list.replaceChildren(...(buttons.length?buttons:[node('p','nav-empty',empty)]));
+    list.dataset.items=signature;
   }
-  // Keep the native dropdown intact when a state update has no navigation changes.
-  const signature=JSON.stringify(options.map(o=>[o.value,o.textContent]));
-  if(picker.dataset.options!==signature) {
-    picker.replaceChildren(...options);
-    picker.dataset.options=signature;
+  for(const button of list.querySelectorAll('button')) {
+    const active=items.some(s=>s.target===button.dataset.target&&keyFor(s)===keyFor(selection));
+    button.classList.toggle('active',active);
+    if(active)button.setAttribute('aria-current','true');
+    else button.removeAttribute('aria-current');
   }
-  picker.disabled=!items.length;
-  picker.value=selection?.kind===kind?selection.target:'';
-  picker.onchange=()=>{
-    const chosen=conversations.find(s=>s.target===picker.value);
-    if(chosen)openChat(chosen);
-  };
 }
 function renderNav() {
   $('conversation-return').hidden=!selection;
   const channels=state.channels.map(c=>({kind:'channel',target:String(c.index),name:c.name}));
   const contacts=Object.entries(state.contacts).filter(([,c])=>c.type===1).map(([target,c])=>({kind:'dm',target,name:c.adv_name||target,unknown:!!c.unknown}));
   const rooms=Object.entries(state.contacts).filter(([,c])=>c.type===3).map(([target,c])=>({kind:'room',target,name:c.adv_name||target,unknown:!!c.unknown}));
-  $('channel-count').textContent=channels.length;
-  $('contact-count').textContent=contacts.length;
-  $('room-count').textContent=rooms.length;
-  renderConversationPicker('channels','channel',channels,'Channel auswählen …','Keine Channels geladen');
-  renderConversationPicker('contacts','dm',contacts,'Kontakt auswählen …','Keine Chat-Kontakte geladen');
-  renderConversationPicker('rooms','room',rooms,'Roomserver auswählen …','Keine Roomserver geladen');
+  renderConversationList('channels',channels,'Keine Channels geladen');
+  renderConversationList('contacts',contacts,'Keine Chat-Kontakte geladen');
+  renderConversationList('rooms',rooms,'Keine Roomserver geladen');
+  showConversationKind();
 }
 function applyState(data) {
+  const previousStatus=state.status;
   Object.assign(state,data); backendOnline=true;
   if(selection && ['dm','room'].includes(selection.kind) && !state.contacts[selection.target]) {
     rememberDraft();selection=null;historyVersion++;messageRows=[];
@@ -118,6 +122,7 @@ function applyState(data) {
     drafts.delete(keyFor(selection));selection=null;historyVersion++;messageRows=[];
     showTab(activeTab);
   }
+  if(selection&&previousStatus!==state.status)updateChatKey();
   $('endpoint').textContent=`${state.host}:${state.port}`;
   $('device-name').textContent=state.info.name||'Dein Companion';
   const info=[['Adresse',`${state.host}:${state.port}`],['Gerät',state.info.name||state.device.model||'—'],['Firmware',state.device.ver||'—'],['Frequenz',state.info.radio_freq ? `${state.info.radio_freq} MHz`:'—'],['Rauschpegel',state.stats.STATS_RADIO?.noise_floor!==undefined?`${state.stats.STATS_RADIO.noise_floor} dBm`:'—']];
@@ -469,19 +474,23 @@ setInterval(renderLastHops,1000);
 function renderEvents() {
   const filter=$('event-filter').value;
   const events=(paused?pausedEvents:state.events).filter(e=>e.type==='AUTH_LOGIN'?(filter==='all'||filter==='auth'):e.type==='RX_LOG_DATA'&&(filter==='all'||String(e.payload?.payload_type)===filter));
-  $('event-count').textContent=events.length;
-  $('events-empty').hidden=events.length>0;
-  $('events').replaceChildren(...events.slice().reverse().map(e=>{
-    const p=e.payload||{}, row=node('tr');
+  const groups=groupPackets(events);
+  $('event-count').textContent=groups.length;
+  $('events-empty').hidden=groups.length>0;
+  const expandedRaw=new Set([...$('events').children].filter(row=>row.querySelector('.packet-raw[open]')).map(row=>row.dataset.group));
+  $('events').replaceChildren(...groups.map(group=>{
+    const e=group.events[0],p=e.payload||{},row=node('tr');
     const description=describePacket(e);
-    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), description.type, packetPreview(e), packetLastHop(e), p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
+    const values=[new Date(e.time*1000).toLocaleTimeString('de-DE'), `${description.type}${group.events.length>1?` · ${group.events.length}×`:''}`, null, packetLastHop(e), p.rssi??p.RSSI??'—', p.snr??p.SNR??'—'];
     values.forEach((value,index)=>{
-      const cell=node('td',index===2?'event-description':'',index===0?undefined:value);
-      if(index===0){
-        const button=node('button','packet-open',value);
-        button.setAttribute('aria-label',`${value} · ${description.type} · Details ansehen`);
-        button.type='button';button.onclick=()=>showPacket(e);cell.append(button);
-      }else cell.title=index===3?(value==='—'?'Last Hop nicht bestimmbar':value==='Direkt'?'Direkt empfangen · kein Repeater im Pfad':`Letzter Hop im Empfangspfad: ${value}`):String(value);
+      const cell=node('td',index===2?'event-description':'',index===2?undefined:value);
+      if(index===2) {
+        row.dataset.group=group.key??JSON.stringify(e);
+        const details=packetDetails(group.events);
+        details.querySelector('.packet-raw').open=expandedRaw.has(row.dataset.group);
+        cell.append(details);
+      }
+      else cell.title=index===3?(value==='—'?'Last Hop nicht bestimmbar':value==='Direkt'?'Direkt empfangen · kein Repeater im Pfad':`Letzter Hop im Empfangspfad: ${value}`):String(value);
       row.append(cell);
     });
     return row;
@@ -514,8 +523,28 @@ function updateViewportHeight() {
 window.visualViewport?.addEventListener('resize',updateViewportHeight);
 window.addEventListener('resize',updateViewportHeight);
 updateViewportHeight();
+let chatKeyRequest=0;
+async function updateChatKey() {
+  const current=selection,request=++chatKeyRequest,field=$('chat-key');
+  if(!current) {field.textContent='';return;}
+  const label=current.kind==='channel'?'Channel Key':'Public Key';
+  field.textContent=`${label}: Nicht verfügbar`;
+  if(current.kind!=='channel') {
+    const key=state.contacts[current.target]?.public_key||current.target;
+    if(/^[0-9a-f]{64}$/i.test(key))field.textContent=`${label}: ${key.toUpperCase()}`;
+    return;
+  }
+  field.textContent=`${label}: Wird geladen …`;
+  try {
+    const result=await api(`/api/channels/${encodeURIComponent(current.target)}/key`);
+    if(request!==chatKeyRequest||selection!==current)return;
+    field.textContent=`${label}: ${result.name===current.name&&typeof result.key==='string'&&/^[0-9a-f]{32}$/i.test(result.key)?result.key.toUpperCase():'Nicht verfügbar'}`;
+  } catch {
+    if(request===chatKeyRequest&&selection===current)field.textContent=`${label}: Nicht verfügbar`;
+  }
+}
 async function openChat(s) {
-  rememberDraft();selection=s;historyVersion++;messageRows=[];olderAvailable=false;
+  rememberDraft();selection=s;$('conversation-kind').value=s.kind;historyVersion++;messageRows=[];olderAvailable=false;
   showConversationList(false);
   $('terminal').classList.remove('chat-options-open');
   $('chat-options-toggle').setAttribute('aria-expanded','false');
@@ -526,6 +555,7 @@ async function openChat(s) {
   $('room-password').value='';renderRoom();
   showTab('terminal');
   $('chat-title').textContent=s.name;
+  updateChatKey();
   renderRouteDiagnostics();
   $('chat-icon').textContent=s.kind==='channel'?'#':s.name.slice(0,2).toUpperCase();
   $('chat-subtitle').textContent=s.kind==='channel'?'Channel · Nachrichten über dein Mesh':s.unknown?'Unbekannter Absender · zum Antworten zuerst im Companion speichern':(s.kind==='room'?'Roomserver':'Direktnachricht');

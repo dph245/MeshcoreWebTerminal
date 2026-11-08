@@ -1214,3 +1214,38 @@ def test_last_hops_window_survives_event_limit(bridge):
         assert set(bridge.snapshot()['last_hops']) == {'aabbcc'}
     with patch('server.app.time.time', return_value=1310):
         assert bridge.snapshot()['last_hops'] == {}
+
+
+def test_channel_keys_follow_confirmed_slots_without_persistence(bridge):
+    async def scenario():
+        import hashlib
+        channel_radio(bridge)
+        await bridge.read_channels()
+        assert bridge.channel_keys == {'0': (b'p' * 16).hex()}
+        await bridge.change_channel(ChannelInput(name='#key-test'))
+        expected = hashlib.sha256(b'#key-test').digest()[:16].hex()
+        assert bridge.channel_keys['1'] == expected
+        assert expected not in str(bridge.snapshot())
+        assert expected not in str(bridge.store.get_meta('channels', []))
+        await bridge.change_channel(ChannelRemoveInput(index=1, name='#key-test'), remove=True)
+        assert '1' not in bridge.channel_keys
+        assert Bridge(bridge.store, 'test', 5000).channel_keys == {}
+    asyncio.run(scenario())
+
+
+def test_channel_key_endpoint_is_targeted_and_not_cached(tmp_path):
+    app = create_app(str(tmp_path / 'keys.db'), autoconnect=False)
+    with TestClient(app) as client:
+        b = app.state.bridge
+        b.channels = [{'index': 0, 'name': 'Public'}, {'index': 1, 'name': '#test'}]
+        b.channel_keys = {'0': 'ab' * 16, '1': 'cd' * 16}
+        result = client.get('/api/channels/1/key')
+        assert result.json() == {'name': '#test', 'key': 'cd' * 16}
+        assert result.headers['cache-control'] == 'no-store'
+        snapshot = client.get('/api/state').text
+        assert 'ab' * 16 not in snapshot and 'cd' * 16 not in snapshot
+        assert client.get('/api/channels/2/key').status_code == 404
+        b.channel_keys.clear()
+        result = client.get('/api/channels/1/key')
+        assert result.json() == {'name': '#test', 'key': None}
+        assert result.headers['cache-control'] == 'no-store'

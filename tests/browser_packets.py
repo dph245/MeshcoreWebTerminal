@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright, expect
 STATIC = Path(__file__).resolve().parents[1] / 'static'
 fixtures = [
     {'payload_type': 5, 'route_type': 1, 'path_len': 2, 'path_hash_size': 1, 'path': 'abcd',
-     'chan_name': '#test', 'message': '<img src=x onerror=alert(1)> Hallo Mesh', 'rssi': -103, 'snr': 4.5},
+     'pkt_payload': 'aabbcc', 'payload_ver': 0, 'chan_name': '#test', 'message': '<img src=x onerror=alert(1)> Hallo Mesh', 'rssi': -103, 'snr': 4.5},
     {'payload_type': 5, 'route_type': 1, 'path_len': 0, 'chan_hash': 'aa'},
     {'payload_type': 4, 'route_type': 1, 'adv_name': 'Dach-Repeater', 'adv_type': 2,
      'adv_lat': 52.5, 'adv_lon': 13.4, 'path_len': 0},
@@ -44,31 +44,63 @@ with sync_playwright() as p:
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
     page.locator('#monitor-nav').click()
     expect(page.locator('#events tr')).to_have_count(5)
-    expect(page.locator('#events')).to_contain_text('Absender / Inhalt nicht verfügbar')
+    expect(page.locator('#events')).to_contain_text('Inhalt verschlüsselt')
     expect(page.locator('#events')).to_contain_text('Dach-Repeater')
     expect(page.locator('#events')).not_to_contain_text('Binäre Anwendungsdaten')
-    expect(page.locator('#events tr').filter(has_text='Hallo Mesh').locator('td').nth(3)).to_have_text('cd')
-    expect(page.locator('#events tr').filter(has_text='Dach-Repeater').locator('td').nth(3)).to_have_text('Direkt')
-    expect(page.locator('#events tr').filter(has_text='Direktnachricht').locator('td').nth(3)).to_have_text('—')
-    page.locator('#events tr').filter(has_text='Hallo Mesh').get_by_role('button').click()
-    expect(page.locator('#packet-message')).to_have_text(fixtures[0]['message'])
-    expect(page.locator('#packet-fields')).to_contain_text('Dach (ab) → cd')
-    expect(page.locator('#packet-fields')).to_contain_text('-103 dBm')
-    expect(page.locator('#packet-fields')).to_contain_text('4.5 dB')
-    assert page.locator('#packet-dialog img').count() == 0
-    page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', state['events'][0])
-    expect(page.locator('#packet-dialog')).to_be_visible()
-    expect(page.locator('#packet-message')).to_have_text(fixtures[0]['message'])
-    page.locator('#packet-dialog summary').click()
-    expect(page.locator('#packet-raw')).to_contain_text('payload_type')
-    for theme in ['dark-green', 'dark-blue', 'light']:
+    row = page.locator('#events tr').filter(has_text='Hallo Mesh')
+    expect(row.locator('td').nth(3)).to_have_text('cd')
+    expect(row.locator('.packet-message')).to_have_text(fixtures[0]['message'])
+    expect(row.locator('.packet-fields')).to_contain_text('Dach (ab) → cd')
+    expect(row.locator('.packet-fields')).to_contain_text('-103 dBm')
+    expect(row.locator('.packet-fields')).to_contain_text('4.5 dB')
+    expect(row.locator('td').first.locator('button')).to_have_count(0)
+    assert page.locator('#events img').count() == 0
+    expect(row.locator('.packet-raw')).not_to_have_attribute('open', '')
+    row.locator('.packet-raw summary').click()
+    # Same payload through another hop remains one group; latest signal wins.
+    duplicate = {'type':'RX_LOG_DATA','time':1700000030,'payload':{
+        **fixtures[0], 'pkt_payload':'AABBCC', 'path':'abef', 'rssi':-90, 'snr':8}}
+    page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', duplicate)
+    expect(page.locator('#events tr')).to_have_count(5)
+    expect(row.locator('.packet-raw')).to_have_attribute('open', '')
+    expect(row.locator('td').nth(1)).to_have_text('Channel-Nachricht · 2×')
+    assert row.locator('td').nth(1).evaluate('el => el.scrollWidth<=el.clientWidth')
+    expect(row.locator('td').nth(3)).to_have_text('ef')
+    expect(row.locator('td').nth(4)).to_have_text('-90')
+    expect(row.locator('.packet-receptions li')).to_have_count(2)
+    expect(row.locator('.packet-receptions')).to_contain_text('Dach (ab) → cd')
+    expect(row.locator('.packet-receptions')).to_contain_text('Dach (ab) → ef')
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    row.locator('.packet-raw summary').click()
+    page.screenshot(path='/tmp/mesh-live-packets-grouped-desktop.png')
+    # TRACE variants and unrelated login attempts must remain separate.
+    assert page.evaluate("""()=>{
+        const trace={type:'RX_LOG_DATA',payload:{payload_type:9,payload_ver:0,pkt_payload:'abcd',path_len:1,path_hash_size:1,path:'ab'}};
+        return groupPackets([trace,{...trace,payload:{...trace.payload,path:'cd'}}]).length===2
+            && groupPackets([trace,{...trace,payload:{...trace.payload,path:'AB'}}]).length===1
+            && groupPackets([{type:'AUTH_LOGIN'},{type:'AUTH_LOGIN'}]).length===2;
+    }""")
+    # Exact bytes, type and version distinguish packets; decoded text alone does not.
+    for changes in [{'pkt_payload':'aabbcd'}, {'payload_type':2}, {'payload_ver':1}, {'pkt_payload':''}, {'pkt_payload':'zz'}]:
+        event = {**duplicate, 'payload':{**duplicate['payload'],**changes}}
+        page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', event)
+    expect(page.locator('#events tr')).to_have_count(10)
+    # Pause is a fixed snapshot, including filtering and grouped counts.
+    page.locator('#pause').click()
+    page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', duplicate)
+    page.locator('#event-filter').select_option('5')
+    expect(page.locator('#events td:nth-child(2)').filter(has_text='3×')).to_have_count(0)
+    page.locator('#pause').click()
+    expect(page.locator('#events td:nth-child(2)').filter(has_text='3×')).to_have_count(1)
+    page.locator('#event-filter').select_option('all')
+    for theme in ['dark', 'light']:
         page.evaluate('(theme)=>document.documentElement.dataset.theme=theme', theme)
         page.set_viewport_size({'width': 390, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        assert page.locator('#packet-dialog').evaluate('(el)=>el.scrollWidth <= el.clientWidth')
-        page.screenshot(path=f'/tmp/mesh-packet-{theme}.png')
-    page.keyboard.press('Escape')
-    expect(page.locator('#packet-dialog')).not_to_be_visible()
+        page.screenshot(path=f'/tmp/mesh-live-packets-{theme}.png')
+    # A state refresh groups the same receptions just like live events.
+    page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})', state)
+    expect(page.locator('#events tr')).to_have_count(5)
     for payload, expected in [
         ({'route_type': 0, 'path_len': 2, 'path_hash_size': 2, 'path': 'aabbCCDD'}, 'ccdd'),
         ({'route_type': 1, 'path_len': 2, 'path_hash_size': 3, 'path': 'aabbccDDEEFF'}, 'ddeeff'),
@@ -79,14 +111,12 @@ with sync_playwright() as p:
         ({'route_type': 1, 'payload_type': 9, 'path_len': 1, 'path_hash_size': 1, 'path': 'ab'}, '—'),
         ({'route_type': 1}, '—'),
     ]:
-        event = {'type': 'RX_LOG_DATA', 'time': 1700000020, 'payload': {'payload_type': 5, **payload}}
+        event = {'type': 'RX_LOG_DATA', 'time': 1700000040, 'payload': {'payload_type': 5, **payload}}
         page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', event)
         expect(page.locator('#events tr').first.locator('td').nth(3)).to_have_text(expected)
-    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-    page.locator('#events tr').filter(has_text='Direktnachricht').get_by_role('button').click()
-    expect(page.locator('#packet-fields')).to_contain_text('Routing-Pfad')
-    expect(page.locator('#packet-fields')).not_to_contain_text('Empfangspfad')
-    page.keyboard.press('Escape')
+    direct = page.locator('#events tr').filter(has_text='Direktnachricht').locator('.packet-fields')
+    expect(direct).to_contain_text('Routing-Pfad')
+    expect(direct).not_to_contain_text('Empfangspfad')
     for scope, route_type, label in [
         ({'status':'scoped','code':'0x23FA','candidates':['#berlin']}, 0, '#berlin (Code stimmt überein)'),
         ({'status':'scoped','code':'0x479A','candidates':[]}, 0, 'Scope vorhanden · Name unbekannt'),
@@ -94,17 +124,15 @@ with sync_playwright() as p:
         ({'status':'unscoped'}, 1, 'Ohne Scope'),
         ({'status':'unknown'}, 0, 'Nicht bestimmbar'),
     ]:
-        event = {'type':'RX_LOG_DATA','time':1700000000,'payload':{
+        event = {'type':'RX_LOG_DATA','time':1700000050,'payload':{
             'payload_type':5,'route_type':route_type,'message':'Scope-Test','received_scope':scope}}
-        page.evaluate('(event)=>showPacket(event)', event)
-        expect(page.locator('#packet-fields')).to_contain_text('Scope des Absenders')
-        expect(page.locator('#packet-fields')).to_contain_text(label)
+        page.evaluate('(event)=>testStream.listeners.radio({data:JSON.stringify(event)})', event)
+        fields=page.locator('#events tr').first.locator('.packet-fields')
+        expect(fields).to_contain_text('Scope des Absenders')
+        expect(fields).to_contain_text(label)
         if scope.get('code'):
-            expect(page.locator('#packet-fields')).to_contain_text(scope['code'])
-        page.keyboard.press('Escape')
-    page.evaluate("showPacket({type:'CHANNEL_MSG_RECV',time:1700000000,payload:{text:'Hallo'}})")
-    expect(page.locator('#packet-fields')).to_contain_text('Nicht übermittelt')
-    page.keyboard.press('Escape')
+            expect(fields).to_contain_text(scope['code'])
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     messages[:] = [
         {'id':1,'direction':'in','text':'Mit Scope','timestamp':1700000000,'status':'received',
          'reception':{'routing':'flood','hops':1,'path':['ab'],'scope':{'status':'scoped','code':'0x23FA','candidates':['#berlin']}}},
@@ -181,13 +209,10 @@ with sync_playwright() as p:
     page.locator('#event-filter').select_option('auth')
     expect(page.locator('#events tr')).to_have_count(1)
     expect(page.locator('#events')).to_contain_text('Dach · Versuch 2/3 · AUTO / FLOOD · Erfolgreich')
-    page.locator('#events .packet-open').click()
-    expect(page.locator('#packet-title')).to_have_text('Anmeldung')
-    expect(page.locator('#packet-fields')).to_contain_text('60 s')
-    expect(page.locator('#packet-message')).to_be_hidden()
-    page.keyboard.press('Escape')
+    expect(page.locator('#events .packet-fields')).to_contain_text('60 s')
+    expect(page.locator('#events .packet-message')).to_have_count(0)
     page.locator('#event-filter').select_option('5')
     expect(page.locator('#events')).not_to_contain_text('Versuch 2/3')
     assert not errors, errors
     browser.close()
-print('Packet browser checks passed: readable metadata, encrypted/unknown/raw packets, aliases, XSS, live updates, themes and mobile dialog.')
+print('Packet browser checks passed: readable metadata, encrypted/unknown/raw packets, aliases, XSS, live updates, grouping, pause, themes and inline mobile details.')

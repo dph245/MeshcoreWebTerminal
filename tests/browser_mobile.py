@@ -1,5 +1,6 @@
 """Mobile terminal layout with touch emulation and intercepted APIs; no radio."""
 from pathlib import Path
+from conversation_navigation import choose_conversation
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright, expect
@@ -23,7 +24,10 @@ with sync_playwright() as p:
         if r.request.method == 'POST':
             writes.append(path)
             raise AssertionError(f'Unexpected write: {path}')
-        if path == '/api/messages':
+        if path.startswith('/api/channels/') and path.endswith('/key'):
+            index = int(path.split('/')[3])
+            r.fulfill(json={'name':state['channels'][index]['name'], 'key':'12ab' * 8})
+        elif path == '/api/messages':
             r.fulfill(json=[dict(id=i,direction='in',text=f'Radio: Nachricht {i}',
                                 target=CONTACT,sender_key=CONTACT[:8],timestamp=100+i,status='received') for i in range(1,31)])
         elif path.startswith('/api/'):
@@ -40,7 +44,7 @@ with sync_playwright() as p:
     page.evaluate('(data)=>testStream.listeners.state({data:JSON.stringify(data)})',state)
     expect(page.locator('#conversation-list')).to_be_visible()
     expect(page.locator('.terminal-content')).to_be_hidden()
-    expect(page.locator('#conversation-list select')).to_have_count(4)
+    expect(page.locator('#conversation-list select')).to_have_count(2)
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
 
     def fits():
@@ -48,12 +52,14 @@ with sync_playwright() as p:
           && document.documentElement.scrollWidth<=innerWidth''')
         expect(page.locator('#composer')).to_be_in_viewport(ratio=1)
         assert page.locator('#messages').evaluate('(el)=>el.clientHeight>0')
+        assert page.locator('#chat-key').evaluate('(el)=>el.scrollWidth<=el.clientWidth')
 
     for width,height in [(390,844),(320,568),(667,375),(390,420)]:
         page.set_viewport_size(dict(width=width,height=height))
-        page.locator('#contacts').select_option(page.locator('#contacts option').nth(1).get_attribute('value'))
+        choose_conversation(page, 'contacts')
         expect(page.locator('#conversation-list')).to_be_hidden()
         expect(page.locator('#chat-route-edit')).to_be_visible()
+        expect(page.locator('#chat-key')).to_have_text('Public Key: ' + CONTACT.upper())
         page.locator('#message-text').fill('Mobiler Entwurf')
         fits()
         page.locator('#emoji-toggle').click()
@@ -70,20 +76,30 @@ with sync_playwright() as p:
         expect(page.locator('#message-text')).to_have_value('Mobiler Entwurf🍕')
         fits()
         page.locator('#conversation-back').click()
-        page.locator('#channels').select_option(page.locator('#channels option').nth(1).get_attribute('value'))
+        choose_conversation(page, 'channels')
+        expect(page.locator('#chat-key')).to_have_text('Channel Key: ' + '12AB' * 8)
         expect(page.locator('#channel-scope-form')).to_be_hidden()
         page.locator('#chat-options-toggle').click()
         expect(page.locator('#channel-scope-form')).to_be_visible()
         fits()
         page.locator('#chat-options-toggle').click()
         page.locator('#conversation-back').click()
-        page.locator('#rooms').select_option(page.locator('#rooms option').nth(1).get_attribute('value'))
+        choose_conversation(page, 'rooms')
+        expect(page.locator('#chat-key')).to_have_text('Public Key: ' + ROOM.upper())
         expect(page.locator('#room-login-form')).to_be_hidden()
         page.locator('#chat-options-toggle').click()
         expect(page.locator('#room-login-form')).to_be_visible()
         fits()
         page.locator('#chat-options-toggle').click()
         page.locator('#conversation-back').click()
+    page.set_viewport_size(dict(width=1440,height=900))
+    choose_conversation(page, 'contacts')
+    expect(page.locator('#chat-key')).to_have_text('Public Key: ' + CONTACT.upper())
+    fits()
+    page.screenshot(path='/tmp/mesh-chat-key-desktop.png')
+    choose_conversation(page, 'channels')
+    expect(page.locator('#chat-key')).to_have_text('Channel Key: ' + '12AB' * 8)
+    page.screenshot(path='/tmp/mesh-channel-key-desktop.png')
     assert not writes
     assert not errors, errors
     browser.close()

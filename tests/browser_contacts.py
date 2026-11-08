@@ -1,5 +1,6 @@
 """Contact management UI checks with simulated API; no radio traffic."""
 from pathlib import Path
+from conversation_navigation import choose_conversation
 from playwright.sync_api import sync_playwright, expect
 
 STATIC = Path(__file__).resolve().parents[1] / 'static'
@@ -68,7 +69,7 @@ with sync_playwright() as p:
     expect(page.locator('#contact-feedback')).to_contain_text('Bereits gespeichert')
     expect(page.locator('#new-contact-name')).to_have_value('Duplicate')
     page.locator('#terminal-nav').click()
-    page.locator('#contacts').select_option(page.locator('#contacts option').nth(1).get_attribute('value'))
+    choose_conversation(page, 'contacts')
     expect(page.locator('#chat')).to_be_visible()
     state['contacts'] = {}
     refresh()  # Deletion by another client closes the now invalid chat.

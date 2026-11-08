@@ -15,7 +15,7 @@ import uuid
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from meshcore import EventType, MeshCore
 from meshcore.tcp_cx import TCPConnection
@@ -324,6 +324,7 @@ class Bridge:
         self.default_scope = None
         self.scope_supported = False
         self.channel_scopes = store.get_meta("channel_scopes", {})
+        self.channel_keys = {}  # Memory only; never included in snapshots, logs or metadata.
         self.channel_hashes = {}
         self.channel_names = {}
         self.recent_echoes = deque(maxlen=300)
@@ -855,6 +856,9 @@ class Bridge:
         self.channels = channels
         self.channel_hashes = {str(i): hashlib.sha256(p["channel_secret"]).hexdigest()[:2]
                                for i, p in slots.items() if isinstance(p.get("channel_secret"), bytes)}
+        self.channel_keys = {str(c["index"]): slots[c["index"]]["channel_secret"].hex()
+                             for c in channels if isinstance(slots[c["index"]].get("channel_secret"), bytes)
+                             and len(slots[c["index"]]["channel_secret"]) == 16}
         self.channel_names = {str(i): p.get("channel_name", "") for i, p in slots.items()}
         self.store.set_meta("channels", channels)
         self.changed()
@@ -898,6 +902,9 @@ class Bridge:
                 raise
             self.store.archive_channel(index)
             self.channel_hashes[str(index)] = hashlib.sha256(expected_secret).hexdigest()[:2]
+            self.channel_keys.pop(str(index), None)
+            if not remove:
+                self.channel_keys[str(index)] = expected_secret.hex()
             self.channel_names[str(index)] = expected_name
             self.channel_scopes.pop(str(index), None)
             self.store.set_meta("channel_scopes", self.channel_scopes)
@@ -1759,6 +1766,15 @@ def create_app(db_path=None, autoconnect=None):
             return await request.app.state.bridge.change_channel(setting, remove)
         except (RuntimeError, TimeoutError, ConnectionError) as exc:
             raise HTTPException(502, f"Channel-Änderung unbestätigt: {str(exc) or 'Timeout'}. Nach Neuverbindung prüfen.") from exc
+
+    @app.get("/api/channels/{index}/key")
+    async def channel_key(request: Request, index: int):
+        bridge = request.app.state.bridge
+        channel = next((c for c in bridge.channels if c["index"] == index), None)
+        if channel is None:
+            raise HTTPException(404, "Channel nicht vorhanden.")
+        return JSONResponse({"key": bridge.channel_keys.get(str(index)), "name": channel["name"]},
+                            headers={"Cache-Control": "no-store"})
 
     @app.post("/api/channels")
     async def add_channel(request: Request, setting: ChannelInput):

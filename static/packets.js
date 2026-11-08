@@ -93,28 +93,49 @@ function describePacket(event) {
   return {type,summary:parts.join(' · '),fields,message};
 }
 
-function showPacket(event) {
-  const description=describePacket(event);
-  $('packet-title').textContent=description.type;
-  $('packet-summary').textContent=description.message===null?description.summary:'Nachrichteninhalt als Klartext verfügbar.';
-  $('packet-fields').replaceChildren(...description.fields.map(([label,value])=>{
-    const row=node('div');row.append(node('dt','',label),node('dd','',value));return row;
-  }));
-  $('packet-message').hidden=description.message===null;
-  $('packet-message').textContent=description.message||'';
-  $('packet-raw').textContent=JSON.stringify(event.payload,null,2);
-  $('packet-dialog').querySelector('details').open=false;
-  $('packet-dialog').showModal();
+function packetDetails(events) {
+  const event=events[0],description=describePacket(event),body=node('div','packet-body');
+  if(description.message===null)body.append(node('p','packet-summary',description.summary));
+  else body.append(node('pre','packet-message',description.message));
+  const fields=node('dl','packet-fields');
+  for(const [label,value] of description.fields) {
+    const row=node('div');row.append(node('dt','',label),node('dd','',value));fields.append(row);
+  }
+  body.append(fields);
+  if(events.length>1) {
+    const receptions=node('ul','packet-receptions');
+    for(const received of events) {
+      const p=received.payload||{};
+      const path=describePacket(received).fields.find(([label])=>['Empfangspfad','Routing-Pfad','Pfad'].includes(label))?.[1]||'Pfad nicht verfügbar';
+      receptions.append(node('li','',`${new Date(received.time*1000).toLocaleTimeString('de-DE')} · ${path} · RSSI ${p.rssi??p.RSSI??'—'} dBm · SNR ${p.snr??p.SNR??'—'} dB`));
+    }
+    body.append(receptions);
+  }
+  const raw=node('details','packet-raw'),summary=node('summary','','Technische Rohdaten');
+  raw.append(summary,node('pre','',JSON.stringify(events.length===1?event.payload:events.map(e=>({time:e.time,payload:e.payload})),null,2)));
+  body.append(raw);
+  return body;
 }
 
-// Compact live rows following MeshCoreOnAir's type/content/signal layout.
-// The TCP SDK does not provide OnAir's observer hash or multi-observer groups.
-function packetPreview(event) {
-  if(event.type==='AUTH_LOGIN')return loginDescription(event.payload||{});
+// Group exact payload bytes, independent of per-reception route and signal data.
+// Missing/malformed raw data must never merge unrelated encrypted packets.
+function packetGroupKey(event) {
   const p=event.payload||{};
-  const key=p.adv_key||p.public_key||p.pubkey_prefix;
-  const sender=p.adv_name||(typeof key==='string'?hopName(key):'');
-  const channel=p.chan_name||(p.channel_idx!==undefined?state.channels.find(c=>c.index===p.channel_idx)?.name:'');
-  const message=typeof p.message==='string'?p.message:typeof p.text==='string'?p.text:'';
-  return [sender,channel,message].filter(Boolean).join(' · ')||'Absender / Inhalt nicht verfügbar';
+  if(event.type!=='RX_LOG_DATA'||!Number.isInteger(p.payload_type)||p.payload_type<0||p.payload_type>15
+      ||typeof p.pkt_payload!=='string'||!p.pkt_payload.length||p.pkt_payload.length%2||!/^[0-9a-f]+$/i.test(p.pkt_payload))return null;
+  const trace=p.payload_type===9?[p.path_len,p.path_hash_size,typeof p.path==='string'?p.path.toLowerCase():p.path]:null;
+  return JSON.stringify([p.payload_type,p.payload_ver??0,p.pkt_payload.toLowerCase(),trace]);
+}
+function groupPackets(events) {
+  const groups=[],byKey=new Map();
+  for(const event of events.slice().reverse()) {
+    const key=packetGroupKey(event);
+    let group=key===null?null:byKey.get(key);
+    if(!group) {
+      group={key,events:[]};groups.push(group);
+      if(key!==null)byKey.set(key,group);
+    }
+    group.events.push(event);
+  }
+  return groups;
 }

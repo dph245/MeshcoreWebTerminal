@@ -215,8 +215,8 @@
 .theme-picker select{font-size:14px;padding:5px 7px;min-width:120px}
 input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 @media(max-width:700px){.theme-picker{grid-column:1/-1;margin-top:8px;padding:12px 0 0}.theme-picker select{min-width:160px}}
-.event-description{white-space:normal;overflow-wrap:anywhere;line-height:1.45}.event-description>span{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.packet-open{display:block;border:0;background:none;color:var(--accent);padding:6px 0 0;font-size:12px;text-decoration:underline;text-underline-offset:3px}
-#packet-dialog{width:min(680px,calc(100% - 24px));max-height:85vh;padding:0;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}#packet-dialog::backdrop{background:#0009}#packet-dialog .panel-heading{border-bottom:1px solid var(--line)}#packet-dialog h2{font-size:16px}.packet-body{padding:0 14px 14px}.packet-body>p{color:var(--muted);line-height:1.7;overflow-wrap:anywhere}.packet-body dl{padding:0}.packet-body dl>div{align-items:baseline;gap:20px;padding-block:7px}.packet-body dt{flex-shrink:0}.packet-body dd{line-height:1.7}.packet-body pre{font:14px/1.7 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:14px}.packet-body details{margin-top:12px}.packet-body summary{cursor:pointer;color:var(--muted);font-size:14px}.packet-body summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.event-description{white-space:normal;overflow-wrap:anywhere;line-height:1.45}
+.packet-body{padding:0 14px 14px}.packet-body>p{color:var(--muted);line-height:1.7;overflow-wrap:anywhere}.packet-body dl{padding:0}.packet-body dl>div{align-items:baseline;gap:20px;padding-block:7px}.packet-body dt{flex-shrink:0}.packet-body dd{line-height:1.7}.packet-body pre{font:14px/1.7 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:14px}.packet-body details{margin-top:12px}.packet-body summary{cursor:pointer;color:var(--muted);font-size:14px}.packet-body summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
 @media(max-width:700px){.packet-body dl>div{display:block}.packet-body dd{text-align:left;margin-top:5px}}
 
 /* Compact monitor: activity first, configuration below the event stream. */
@@ -376,8 +376,6 @@ main { margin: 0; min-height: 100dvh; }
 .event-panel table { min-width: 750px; }
 .event-panel th:nth-child(4) { width: 90px; }
 .event-panel th:nth-child(5), .event-panel th:nth-child(6) { width: 70px; }
-.event-description > span { -webkit-line-clamp: 2; }
-.packet-open { display: inline-block; padding-top: 2px; }
 .device-tabs { flex-wrap: wrap; justify-content: flex-start; gap: 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
 .device-tabs button { padding: 10px 4px; }
 #cli-reference { margin: 8px 0 16px; }
@@ -424,7 +422,6 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
 
 #terminal .contacts { flex: 0 1 auto; max-height: 35vh; }
 .device-identity summary { color: var(--text); font-weight: 600; padding: 0; }
-.event-panel .packet-open { padding: 0; white-space: nowrap; font: inherit; }
 
 .chat-heading { flex-wrap: wrap; flex-shrink: 0; }
 .headline-scope { margin-left: auto; padding: 0; min-width: 0; }
@@ -502,7 +499,32 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0;
 @media(max-width:400px){.composer-bottom {gap:8px;flex-wrap:wrap;}}
 .message-sender {padding:0;border:0;background:none;color:inherit;font:inherit;text-decoration:underline;text-underline-offset:2px;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;}
 
-/* Separate native conversation dropdowns. */
-#terminal .conversation-picker {display:flex;flex-direction:column;gap:6px;margin:18px 6px 0;min-width:0;}
-.conversation-picker > span {display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);}
-#terminal .conversation-picker select {width:100%;min-width:0;max-width:100%;padding:7px 8px;text-overflow:ellipsis;}
+/* One category dropdown with fully readable conversation names. */
+#conversation-kind {margin:18px 6px 10px;width:calc(100% - 12px);min-width:0;padding:7px 8px;}
+#terminal .conversation-items {min-width:0;}
+#terminal .conversation-items .nav-item {white-space:normal;overflow-wrap:anywhere;line-height:1.5;}
+
+/* Live packet details are immediately readable in the content column. */
+.event-panel .event-description {vertical-align:top;}
+.event-panel td {vertical-align:top;}
+.event-panel td:nth-child(2) {white-space:normal;overflow-wrap:anywhere;}
+.event-description .packet-body {padding:0;white-space:normal;}
+.event-description .packet-summary {margin:0 0 6px;line-height:1.5;color:var(--text);}
+.event-description .packet-fields > div {display:block;padding:3px 0;border:0;}
+.event-description .packet-fields dt {display:inline;color:var(--muted);}
+.event-description .packet-fields dd {display:inline;margin-left:6px;text-align:left;}
+.event-description .packet-body pre {padding:6px;font:inherit;}
+.event-description .packet-receptions {padding-left:18px;line-height:1.6;overflow-wrap:anywhere;}
+
+.chat-identity {display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;min-width:0;}
+.chat-identity h1 {min-width:0;overflow-wrap:anywhere;}
+.chat-key {min-width:0;max-width:100%;font:11px/1.5 var(--mono);color:var(--muted);overflow-wrap:anywhere;word-break:break-all;user-select:text;}
+@media(max-width:700px) {
+  #terminal .chat-heading-title {flex:1 1 180px;}
+  #terminal .chat-identity h1 {white-space:normal;overflow:visible;}
+}
+@media(max-width:700px) and (max-height:500px) {
+  #terminal .composer textarea {height:40px;}
+  #terminal .emoji-picker {max-height:15dvh;}
+  #channel-scope-form, #room-login-form {max-height:12dvh;}
+}

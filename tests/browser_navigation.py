@@ -1,5 +1,6 @@
 """Unread markers and conversation sorting, with simulated API and no radio traffic."""
 from pathlib import Path
+from conversation_navigation import choose_conversation
 from urllib.parse import urlparse, parse_qs
 from playwright.sync_api import sync_playwright, expect
 
@@ -53,53 +54,57 @@ with sync_playwright() as p:
 
     page.goto('http://mesh.test/')
     refresh()
-    expect(page.locator('#channels option:not([value=""])')).to_have_text(['#Alpha', '#Zulu'])
-    expect(page.locator('#contacts option:not([value=""])')).to_have_text(['Alice', 'Zoe'])
+    expect(page.locator('#conversation-kind option')).to_have_text(['Channels', 'Direktnachrichten', 'Roomserver'])
+    expect(page.locator('#channels')).to_be_visible()
+    expect(page.locator('#contacts')).to_be_hidden()
+    expect(page.locator('#rooms')).to_be_hidden()
+    expect(page.locator('#channels button')).to_have_text(['#Alpha', '#Zulu'])
+    expect(page.locator('#contacts button')).to_have_text(['Alice', 'Zoe'])
     message('channel', '0')
     message('dm', ZOE[:12])
     message('dm', ALICE[:12], 'out')
-    expect(page.locator('#channels option[data-unread]')).to_have_count(1)
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(1)
+    expect(page.locator('#channels button[data-unread]')).to_have_count(1)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(1)
     page.locator('#conversation-sort').select_option('recent')
-    expect(page.locator('#channels option:not([value=""])')).to_have_text(['#Zulu · Ungelesen', '#Alpha'])
-    expect(page.locator('#contacts option:not([value=""])')).to_have_text(['Alice', 'Zoe · Ungelesen'])
-    page.locator('#contacts').select_option(ZOE)
+    expect(page.locator('#channels button')).to_have_text(['#Zulu · Ungelesen', '#Alpha'])
+    expect(page.locator('#contacts button')).to_have_text(['Alice', 'Zoe · Ungelesen'])
+    choose_conversation(page, 'contacts', target=ZOE)
     expect(page.locator('#messages')).to_contain_text('Message 2')
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(0)
-    expect(page.locator('#contacts option:not([value=""])')).to_have_text(['Zoe', 'Alice'])
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(0)
+    expect(page.locator('#contacts button')).to_have_text(['Zoe', 'Alice'])
     message('dm', ZOE[:12])
     expect(page.locator('#messages')).to_contain_text('Message 4')
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(0)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(0)
     page.evaluate("Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'})")
     message('dm', ZOE[:12])
     expect(page.locator('#messages')).to_contain_text('Message 5')
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(1)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(1)
     page.evaluate("delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange'))")
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(0)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(0)
     page.reload()
     refresh()
     expect(page.locator('#conversation-sort')).to_have_value('recent')
-    expect(page.locator('#channels option[data-unread]')).to_have_count(1)
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(0)
+    expect(page.locator('#channels button[data-unread]')).to_have_count(1)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(0)
     message('dm', ZOE[:12])
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(1)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(1)
     page.locator('#conversation-sort').select_option('abc')
-    expect(page.locator('#contacts option:not([value=""])')).to_have_text(['Alice', 'Zoe · Ungelesen'])
+    expect(page.locator('#contacts button')).to_have_text(['Alice', 'Zoe · Ungelesen'])
     page.set_viewport_size(dict(width=390, height=844))
     expect(page.locator('#conversation-sort')).to_be_visible()
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     # Task boundaries, preserved drafts, unread while observing, keyboard tabs.
     page.locator('#terminal-nav').click()
-    page.locator('#contacts').select_option(ZOE)
+    choose_conversation(page, 'contacts', target=ZOE)
     page.locator('#message-text').fill('Entwurf bleibt')
     page.locator('#monitor-nav').click()
     message('dm', ZOE[:12])
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(1)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(1)
     expect(page.locator('#terminal')).to_be_hidden()
     expect(page.locator('#monitor input, #monitor form')).to_have_count(0)
     page.locator('#terminal-nav').click()
     expect(page.locator('#message-text')).to_have_value('Entwurf bleibt')
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(0)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(0)
     for width in [1440, 390]:
         page.set_viewport_size(dict(width=width, height=900))
         for tab in ['terminal', 'monitor', 'device', 'mesh']:
@@ -145,14 +150,38 @@ with sync_playwright() as p:
     page.locator('#pause').click()
     expect(page.locator('#events tr')).to_have_count(1)
     expect(page.locator('#events')).to_contain_text('Test relay')
-    # Large dropdowns must keep the terminal and composer within the viewport.
+    # Long names wrap fully in every category, including unbroken identifiers.
+    long_name = 'Sehr langer vollständiger Gesprächsname ' + 'X' * 90
+    state['channels'][1]['name'] = long_name
+    state['contacts'][ALICE]['adv_name'] = long_name
+    state['contacts']['ef' * 32] = dict(type=3, adv_name=long_name)
+    refresh()
+    page.locator('#terminal-nav').click()
+    for width in [1440, 320]:
+        page.set_viewport_size(dict(width=width, height=844))
+        if page.locator('#conversation-back').is_visible():
+            page.locator('#conversation-back').click()
+        for kind, group in [('channel', 'channels'), ('dm', 'contacts'), ('room', 'rooms')]:
+            page.locator('#conversation-kind').select_option(kind)
+            expect(page.locator('.conversation-items:visible')).to_have_count(1)
+            button = page.locator(f'#{group} button').filter(has_text=long_name)
+            expect(button).to_have_text(long_name)
+            assert button.evaluate("""el => {
+                const style=getComputedStyle(el);
+                return style.whiteSpace==='normal' && style.overflowWrap==='anywhere'
+                    && el.scrollWidth<=el.clientWidth && el.scrollHeight<=el.clientHeight
+                    && el.clientHeight>parseFloat(style.lineHeight)*2;
+            }"""), (kind, width)
+            page.screenshot(path=f'/tmp/mesh-conversations-{kind}-{width}.png')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    # Large lists must keep the terminal and composer within the viewport.
     state['channels'] += [dict(index=i, name=f'#Channel {i}') for i in range(2, 42)]
     state['contacts'].update({f'{i:064x}': dict(type=1, adv_name=f'Kontakt {i}') for i in range(80)})
     state['contacts'].update({f'{i:064x}': dict(type=3, adv_name=f'Room {i}') for i in range(80, 100)})
     refresh()
     page.locator('#terminal-nav').click()
     if page.locator('#conversation-back').is_visible():page.locator('#conversation-back').click()
-    page.locator('#contacts').select_option(page.locator('#contacts option[value]:not([value=""])').filter(has_text='Zoe').get_attribute('value'))
+    choose_conversation(page, 'contacts', name='Zoe')
     for width, height in [(1440, 900), (1024, 600), (800, 500), (390, 844)]:
         page.set_viewport_size(dict(width=width, height=height))
         page.evaluate('window.scrollTo(0,0)')
@@ -169,10 +198,10 @@ with sync_playwright() as p:
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
     page.locator('#conversation-back').click()
     message('dm', ZOE[:12])
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(1)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(1)
     expect(page.locator('.terminal-content')).to_be_hidden()
     page.locator('#conversation-return').click()
-    expect(page.locator('#contacts option[data-unread]')).to_have_count(0)
+    expect(page.locator('#contacts button[data-unread]')).to_have_count(0)
     expect(page.locator('#message-text')).to_have_value('Entwurf bleibt')
     assert not errors, errors
     browser.close()

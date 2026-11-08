@@ -1,5 +1,6 @@
 """Offline Room UI checks; every request is intercepted, with no radio traffic."""
 from pathlib import Path
+from conversation_navigation import choose_conversation
 from playwright.sync_api import sync_playwright, expect
 
 STATIC = Path(__file__).resolve().parents[1] / 'static'
@@ -69,10 +70,10 @@ with sync_playwright() as p:
     refresh()
     expect(page.locator('#multi-acks-save')).to_be_disabled()
     expect(page.locator('#multi-acks-current')).to_have_text('Nicht verfügbar')
-    expect(page.locator('#rooms option:not([value=""])')).to_have_count(1)
-    expect(page.locator('#contacts option:not([value=""])')).to_have_count(1)
+    expect(page.locator('#rooms button')).to_have_count(1)
+    expect(page.locator('#contacts button')).to_have_count(1)
     page.locator('#terminal-nav').click()
-    page.locator('#rooms').select_option(page.locator('#rooms option').nth(1).get_attribute('value'))
+    choose_conversation(page, 'rooms')
     expect(page.locator('#room-login-form')).to_be_visible()
     expect(page.locator('#messages')).to_contain_text('Alice')
     assert page.locator('#messages img').count() == 0

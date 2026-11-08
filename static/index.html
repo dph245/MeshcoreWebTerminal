@@ -153,14 +153,15 @@
         <aside id="conversation-list" class="sidebar" aria-label="Gespräche">
     <button id="conversation-return" type="button" class="button mobile-control" hidden>Zum Gespräch →</button>
     <label class="nav-sort" for="conversation-sort"><span>Sortierung</span><select id="conversation-sort"><option value="abc">ABC</option><option value="recent">Zuletzt benutzt</option></select></label>
-    <label class="conversation-picker" for="channels"><span>Channels <span id="channel-count">0</span></span><select id="channels"><option value="">Channel auswählen …</option></select></label>
-    <label class="conversation-picker" for="contacts"><span>Direktnachrichten <span id="contact-count">0</span></span><select id="contacts"><option value="">Kontakt auswählen …</option></select></label>
-    <label class="conversation-picker" for="rooms"><span>Roomserver <span id="room-count">0</span></span><select id="rooms"><option value="">Roomserver auswählen …</option></select></label>
+    <select id="conversation-kind" aria-label="Gesprächsbereich" aria-controls="channels contacts rooms"><option value="channel">Channels</option><option value="dm">Direktnachrichten</option><option value="room">Roomserver</option></select>
+    <div id="channels" class="conversation-items" role="group" aria-label="Channels"></div>
+    <div id="contacts" class="conversation-items" role="group" aria-label="Direktnachrichten" hidden></div>
+    <div id="rooms" class="conversation-items" role="group" aria-label="Roomserver" hidden></div>
   </aside>
       <div class="terminal-content">
       <p id="terminal-empty" class="empty-state">Channel, Kontakt oder Roomserver auswählen.</p>
     <section id="chat" class="chat" hidden>
-      <div class="chat-heading"><button id="conversation-back" type="button" class="button compact mobile-control" aria-label="Gespräche anzeigen" aria-controls="conversation-list">‹</button><div class="chat-avatar" id="chat-icon">#</div><div class="chat-heading-title"><h1 id="chat-title">Channel</h1><p id="chat-subtitle">MeshCore Channel</p><span id="chat-route-summary" hidden></span></div><button id="chat-options-toggle" type="button" class="button compact mobile-control" aria-expanded="false" aria-controls="channel-scope-form room-login-form" hidden>Scope</button><form id="channel-scope-form" class="scope-form headline-scope" hidden><label for="channel-scope-mode">Channel-Scope <span id="channel-scope-current"></span></label><div class="scope-fields"><select id="channel-scope-mode"><option value="default">Companion-Standard</option><option value="unscoped">Ohne Scope</option><option value="region">Eigene Region</option></select><input id="channel-scope-input" placeholder="#region" aria-label="Channel-Region" autocomplete="off" maxlength="100" hidden><button id="channel-scope-save" class="button" type="submit">Speichern</button></div><span id="channel-scope-feedback" role="status"></span></form><button id="chat-route-edit" type="button" class="button compact" hidden>Routing · AUTO</button></div>
+      <div class="chat-heading"><button id="conversation-back" type="button" class="button compact mobile-control" aria-label="Gespräche anzeigen" aria-controls="conversation-list">‹</button><div class="chat-avatar" id="chat-icon">#</div><div class="chat-heading-title"><div class="chat-identity"><h1 id="chat-title">Channel</h1><span id="chat-key" class="chat-key"></span></div><p id="chat-subtitle">MeshCore Channel</p><span id="chat-route-summary" hidden></span></div><button id="chat-options-toggle" type="button" class="button compact mobile-control" aria-expanded="false" aria-controls="channel-scope-form room-login-form" hidden>Scope</button><form id="channel-scope-form" class="scope-form headline-scope" hidden><label for="channel-scope-mode">Channel-Scope <span id="channel-scope-current"></span></label><div class="scope-fields"><select id="channel-scope-mode"><option value="default">Companion-Standard</option><option value="unscoped">Ohne Scope</option><option value="region">Eigene Region</option></select><input id="channel-scope-input" placeholder="#region" aria-label="Channel-Region" autocomplete="off" maxlength="100" hidden><button id="channel-scope-save" class="button" type="submit">Speichern</button></div><span id="channel-scope-feedback" role="status"></span></form><button id="chat-route-edit" type="button" class="button compact" hidden>Routing · AUTO</button></div>
       <form id="room-login-form" class="scope-form channel-scope" hidden>
         <label for="room-password">Room-Passwort <span id="room-status" role="status"></span></label>
         <div class="scope-fields"><input id="room-password" type="password" autocomplete="off" placeholder="Passwort · leer für Lesezugang"><button id="room-login" class="button" type="submit">Anmelden / synchronisieren</button><button id="room-logout" class="button" type="button">Lokal abmelden</button></div>
@@ -172,10 +173,6 @@
       </div>
     </section>
   </main>
-  <dialog id="packet-dialog" aria-labelledby="packet-title">
-    <div class="panel-heading"><h2 id="packet-title">Funkpaket</h2><form method="dialog"><button class="button compact" autofocus>Schließen</button></form></div>
-    <div class="packet-body"><p id="packet-summary"></p><dl id="packet-fields"></dl><pre id="packet-message" hidden></pre><details><summary>Technische Rohdaten</summary><pre id="packet-raw"></pre></details></div>
-  </dialog>
 <dialog id="route-dialog" aria-labelledby="route-title">
     <h2 id="route-title">Route</h2>
     <form id="route-form">

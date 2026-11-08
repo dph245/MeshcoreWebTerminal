@@ -28,9 +28,11 @@ Die Anwendung bleibt bei FastAPI, SQLite, SSE und Vanilla-JavaScript, ohne Build
 
 Auf schmalen Bildschirmen zeigt das Terminal die Gesprächsliste oder das ausgewählte Gespräch. Der Pfeil in der Chat-Kopfzeile führt zur Liste zurück; Entwürfe bleiben erhalten. Scope und Room-Anmeldung öffnen sich über die Kopfzeile bei Bedarf. Nachrichten und Gesprächsliste scrollen innerhalb der Ansicht; das Sendefeld bleibt unten.
 
+Die Terminal-Kopfzeile zeigt neben dem Namen den vollständigen Public Key des Kontakts beziehungsweise Roomservers oder den Channel Key. Channel Keys werden nur beim Öffnen des jeweiligen Channels gezielt abgerufen (`Cache-Control: no-store`), im Server nur im Arbeitsspeicher gehalten und nicht in Snapshots, Ereignisstrom oder Datenbank gespeichert. Solange der Schlüssel nicht vom Companion gelesen wurde, steht dort „Nicht verfügbar“.
+
 CSS, JavaScript und Favicon erhalten beim Ausliefern der HTML-Seite automatisch einen SHA-256-basierten Versionsparameter (`?v=…`). Bei geändertem Dateiinhalt ändert sich die URL. HTML und statische Dateien werden mit `Cache-Control: no-cache` ausgeliefert, damit der Browser sie beim nächsten Laden beim Server prüft; unveränderte Dateien können weiter über ETag/304 wiederverwendet werden. Dafür ist kein Buildschritt nötig.
 
-Für den Netzmonitor wurde die lokale MeshCoreOnAir-LiveView (`static/app.js`, `render`) geprüft: kompakte Empfangszeilen, neueste zuerst, Filter, Pause und Details auf Abruf. Ihre MQTT-/Observer-Gruppierung und ihr Decoder passen nicht zum TCP-SDK-Datenmodell. Deshalb wird die vorhandene Paketdarstellung in `static/packets.js` weiterverwendet und verdichtet; es werden keine Observer-Hashes oder Absender aus Pfad-Hashes erfunden.
+Im Netzmonitor werden gleiche Funkpakete anhand von Pakettyp, Version und vollständigen Payload-Bytes gruppiert; Empfangspfad und Signalwerte dürfen sich unterscheiden. Ohne eindeutige Rohdaten bleibt jeder Empfang einzeln. TRACE-Pfade werden zusätzlich unterschieden. Pro Gruppe stehen der letzte Empfang und die Anzahl in der Tabelle. Paketdetails erscheinen sofort in „Absender / Inhalt“, einschließlich der einzelnen Empfangspfade und Signalwerte bei mehrfach empfangenen Paketen. Technische Rohdaten lassen sich dort aufklappen. Filter und Pause bleiben verfügbar; die Gruppierung betrifft nur die Anzeige der bis zu 300 Live-Ereignisse.
 
 ## Kontakte verwalten
 
