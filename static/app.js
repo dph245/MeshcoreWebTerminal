@@ -84,10 +84,17 @@ function renderConversationList(id,items,empty) {
   if(list.dataset.items!==signature) {
     const buttons=conversations.map(s=>{
       const unread=(conversationInfo(s).incoming_id||0)>(Number(navigation.read[navigationKey(s)])||0);
-      const button=node('button','nav-item',`${s.name}${unread?' · Ungelesen':''}`);
+      const button=node('button','nav-item',s.name);
       button.type='button';
       button.dataset.target=s.target;
-      if(unread)button.dataset.unread='true';
+      if(unread) {
+        button.dataset.unread='true';
+        button.setAttribute('aria-label',`${s.name}, ungelesene Nachrichten`);
+        const dot=node('span','unread-dot');
+        dot.setAttribute('aria-hidden','true');
+        dot.title='Ungelesene Nachrichten';
+        button.append(dot);
+      }
       button.onclick=()=>openChat(s);
       return button;
     });

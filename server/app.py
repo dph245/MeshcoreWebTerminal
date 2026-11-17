@@ -485,7 +485,7 @@ class Bridge:
                     self.route_status[key] = {"state": "stale"}
             self.log(name, p)
             self.changed()
-        elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "TRACE_DATA", "DISCOVER_RESPONSE"):
+        elif name in ("RX_LOG_DATA", "RAW_DATA", "ADVERTISEMENT", "NEW_CONTACT", "TRACE_DATA", "DISCOVER_RESPONSE", "CHANNEL_DATA_RECV"):
             if name == "RX_LOG_DATA" and (echo := repeater_echo(p)):
                 self.recent_echoes.append(echo)
                 if self.store.record_repeater(*echo):
@@ -648,6 +648,14 @@ class Bridge:
                 self.require_ready()
                 if route_guard != self.path_revision:
                     raise RuntimeError("Pfad vor Versand geändert; kein Versand.")
+            if method == "get_msg":
+                # meshcore 2.3.14 decodes binary channel messages but omits
+                # them from get_msg's expected replies. They also consume a
+                # queue entry and must let the drain continue without timeout.
+                return await self.radio.commands.send(b"\x0a", [
+                    EventType.CONTACT_MSG_RECV, EventType.CHANNEL_MSG_RECV,
+                    EventType.CHANNEL_DATA_RECV, EventType.ERROR, EventType.NO_MORE_MSGS,
+                ])
             return await getattr(self.radio.commands, method)(*args)
         result = await asyncio.wait_for(invoke(), 10)
         if result is None and stop_event is not None and stop_event.is_set():
@@ -864,6 +872,15 @@ class Bridge:
         self.changed()
         return slots
 
+    async def drain_messages(self, limit):
+        # Match meshcore's auto-fetch pacing: a backlog must not produce an
+        # uninterrupted burst of requests to the Companion. Call under lock.
+        for _ in range(limit):
+            if (await self.command("get_msg")).type == EventType.NO_MORE_MSGS:
+                return True
+            await asyncio.sleep(.1)
+        return False
+
     async def change_channel(self, setting, remove=False):
         name = normalize_channel(setting.name)
         async with self.lock:
@@ -884,10 +901,7 @@ class Bridge:
                 expected_secret = hashlib.sha256(name.encode("utf-8")).digest()[:16]
             # Empty the device inbox before reusing slots, so buffered messages
             # cannot be assigned to a subsequently created channel.
-            for _ in range(1000):
-                if (await self.command("get_msg")).type == EventType.NO_MORE_MSGS:
-                    break
-            else:
+            if not await self.drain_messages(1000):
                 raise HTTPException(409, "Nachrichtenpuffer noch nicht leer. Bitte erneut versuchen.")
             try:
                 await self.command("set_channel", index, expected_name, expected_secret)
@@ -1064,10 +1078,7 @@ class Bridge:
                 while self.desired and self.ready and self.radio.is_connected:
                     async with self.lock:
                         # Polling also drains messages queued before the TCP connection.
-                        for _ in range(100):
-                            result = await self.command("get_msg")
-                            if result.type == EventType.NO_MORE_MSGS:
-                                break
+                        await self.drain_messages(100)
                         if time.monotonic() >= next_stats:
                             for method in ("get_stats_core", "get_stats_radio", "get_stats_packets"):
                                 try:

@@ -627,6 +627,72 @@ def test_channel_path_from_real_protocol_parser(bridge):
     asyncio.run(scenario())
 
 
+def test_message_backlog_is_paced_until_empty(bridge):
+    bridge.radio.commands.send = AsyncMock(side_effect=[
+        Event(EventType.CHANNEL_DATA_RECV, {'payload': '1234'}),
+        Event(EventType.CHANNEL_MSG_RECV, {}),
+        Event(EventType.CONTACT_MSG_RECV, {}),
+        Event(EventType.NO_MORE_MSGS, {}),
+    ])
+    async def scenario():
+        calls = []
+        async def pause(delay):
+            calls.append((delay, bridge.radio.commands.send.await_count))
+        with patch('server.app.asyncio.sleep', side_effect=pause):
+            async with bridge.lock:
+                assert await bridge.drain_messages(100)
+        assert calls == [(.1, 1), (.1, 2), (.1, 3)]
+        assert bridge.radio.commands.send.await_count == 4
+    asyncio.run(scenario())
+
+
+def test_message_backlog_limit_and_timeout_are_not_empty_queue(bridge):
+    bridge.radio.commands.send = AsyncMock(return_value=Event(EventType.CHANNEL_MSG_RECV, {}))
+    async def scenario():
+        with patch('server.app.asyncio.sleep', new_callable=AsyncMock):
+            async with bridge.lock:
+                assert not await bridge.drain_messages(2)
+                assert bridge.radio.commands.send.await_count == 2
+                bridge.radio.commands.send.return_value = Event(EventType.ERROR, {'reason': 'no_event_received'})
+                with pytest.raises(RuntimeError, match='no_event_received'):
+                    await bridge.drain_messages(2)
+    asyncio.run(scenario())
+
+
+def test_binary_queue_reply_from_protocol_parser_does_not_timeout(bridge):
+    from meshcore import MeshCore
+    from meshcore.tcp_cx import TCPConnection
+
+    async def scenario():
+        radio = MeshCore(TCPConnection('unused', 1), default_timeout=.2)
+        bridge.radio = radio
+        # Synthetic binary channel frame followed by a normal text message.
+        frames = iter([
+            bytes.fromhex('1b1000000002341203') + b'\x00\xff\x80',
+            bytes.fromhex('11100000000200') + (123456).to_bytes(4, 'little') + b'Test: Moin',
+            b'\x0a',
+        ])
+        async def sender(data):
+            assert data == b'\x0a'
+            await radio._reader.handle_rx(next(frames))
+        radio.commands._sender_func = sender
+        radio.subscribe(EventType.CHANNEL_DATA_RECV, bridge.on_event)
+        radio.subscribe(EventType.CHANNEL_MSG_RECV, bridge.on_event)
+        await radio.dispatcher.start()
+        try:
+            async with bridge.lock:
+                assert await bridge.drain_messages(10)
+            await radio.dispatcher.queue.join()
+            await asyncio.sleep(0)
+            event = next(e for e in bridge.events if e['type'] == 'CHANNEL_DATA_RECV')
+            assert event['payload']['payload'] == '00ff80'
+            assert event['payload']['data_type'] == 0x1234
+            assert bridge.store.history('channel', '0')[0]['text'] == 'Test: Moin'
+        finally:
+            await radio.dispatcher.stop()
+    asyncio.run(scenario())
+
+
 def channel_radio(bridge):
     slots = {
         0: {'channel_name': 'Public', 'channel_secret': b'p' * 16},
@@ -640,7 +706,7 @@ def channel_radio(bridge):
         return Event(EventType.OK, {})
     bridge.radio.commands.get_channel = AsyncMock(side_effect=get_channel)
     bridge.radio.commands.set_channel = AsyncMock(side_effect=set_channel)
-    bridge.radio.commands.get_msg = AsyncMock(return_value=Event(EventType.NO_MORE_MSGS, {}))
+    bridge.radio.commands.send = AsyncMock(return_value=Event(EventType.NO_MORE_MSGS, {}))
     return slots
 
 
